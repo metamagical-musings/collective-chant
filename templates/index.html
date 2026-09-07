@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Collective Chant</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}">
+</head>
+<body>
+    <div class="container">
+        <!-- Background Chant Player -->
+        <div class="chant-player-section">
+            <h2 class="section-title">Collective Chant</h2>
+            <div style="position: relative; margin-bottom: 10px;">
+                <div class="chanting-status">
+                    <span id="chanting-status-text">Click the <i>Unmute</i> button to hear the collective chant.</span>
+                    <button class="btn btn-unmute" id="btn-unmute" disabled>
+                        🔊 Unmute
+                    </button>
+                </div>
+                <audio id="chant-audio-player">
+                    This browser does not support audio.
+                </audio>
+            </div>
+        </div>
+        <!-- Main Timers -->
+        <div class="main-display">
+            <div class="timer-card">
+                <div class="timer-label">Next chant starts in</div>
+                <div class="timer-value" id="time_slot_remaining">&nbsp;</div>
+                <div class="timer-unit">seconds</div>
+            </div>
+            <div class="timer-card">
+                <div class="timer-label">Global recording uploads</div>
+                <div class="timer-value" id="upload_count">&nbsp;</div>
+                <div class="timer-unit">out of <span id="uploads_per_mix">0</span> per mix cycle</div>
+            </div>
+        </div>
+        <!-- Recording Controls -->
+        <div class="recording-section">
+            <h2 class="section-title">Recording Controls</h2>
+            <div class="recording-status">
+                <div class="recording-indicator" id="recording-indicator"></div>
+                <span id="recording-status-text">Not recording.</span>
+            </div>
+            <div class="control-buttons">
+                <button class="btn btn-start" id="btn-start" disabled>
+                    <span>▶</span> Start
+                </button>
+                <button class="btn btn-stop" id="btn-stop" disabled>
+                    <span>■</span> Stop
+                </button>
+                <button class="btn btn-play" id="btn-play" disabled>
+                    <span>▶</span> Play
+                </button>
+                <button class="btn btn-save" id="btn-save" disabled>
+                    <span>💾</span> Save
+                </button>
+                <button class="btn btn-load" id="btn-load">
+                    <span>📂</span> Load
+                </button>
+                <button class="btn btn-upload" id="btn-upload" disabled>
+                    <span>⬆</span> Upload
+                </button>
+            </div>
+            <input type="file" id="file-input" class="file-input" accept=".webm">
+            <audio id="local-audio-player" controls style="display: none;"></audio>
+        </div>
+        <div class="two-column-layout">
+            <div class="uniform-section">
+                <h2 class="section-title">Available Upload Tokens</h2>
+                <div class="list-container" id="tokens-list">
+                    <div class="token-item token-info">
+                        Waiting for tokens...
+                    </div>
+                </div>
+            </div>
+            <div class="uniform-section">
+                <h2 class="section-title">Chant Mix Contributors</h2>
+                <div class="list-container" id="contributors-list">
+                    <div class="token-item token-info">
+                        Waiting for chant mix...
+                    </div>
+                </div>
+            </div>
+            <div class="uniform-section">
+                <h2 class="section-title">Status & Notifications</h2>
+                <div class="list-container" id="status-messages">
+                    <div class="status-item status-info">
+                        Connecting to server...
+                    </div>
+                </div>
+            </div>
+            <div class="uniform-section">
+                <h2 class="section-title">Instructions</h2>
+                <div class="list-container" id="status-messages">
+                    <p>
+                        <strong>Unmute:</strong> Click the <i>Unmute</i> button to hear the collective chant, starting with the next chant.
+                        It cycles every <span id="slot-duration-val-1">&nbsp;</span>s.
+                    </p>
+                    <p>
+                        <strong>Recording:</strong>
+                        <div style="padding-left: 20px;">
+                            <ul>
+                            <li>Press the <i>Start</i> button to begin recording at the beginning of the next chant.</li>
+                            <li>During live recording, the original reference chant is played rather than the collective chant mixed from uploads, so that you can synchronize your voice with it.</li>
+                            <li>Recording stops automatically after <span id="slot-duration-val-2">0</span>s, which is a few seconds longer than the chant, if not stopped before then by clicking the <i>Stop</i> button.</li>
+                            <li>Allow live recording to continue until it stops automatically, maintaining silence after the reference chant ends, to ensure inclusion in the next mix. (The uploaded recording must have a time duration within <span id="tolerance-val">&nbsp;</span>s of the full chant cycle time to help filter out invalid recordings.)</li>
+                            </ul>
+                        </div>
+                    </p>
+                    <p>
+                        <strong>Upload:</strong> Click the <i>Upload</i> button to upload your recording to the server so that it can be included in the next mix.
+                    </p>
+                    <p>
+                        <strong>Play/Save/Load:</strong> You can <i>Play</i> your recording, <i>Save</i> it to your local computer and <i>Load</i> it back in later.
+                    </p>
+                    <p>
+                        <strong>Available Tokens:</strong> A token is required to upload. One may be granted at the beginning of each chant cycle depending on demand; they expire in <span id="rec-slot-duration">&nbsp;</span>s if not used.
+                    </p>
+                    <p>
+                        <strong>Chant Mix Contributors:</strong> A list of tokens corresponding to uploaded recordings included in the currently playing chant mix. Contributions by you have a yellow left-border.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script>
+        const config = {
+            time_slot_duration: {{ time_slot_duration }},
+            rec_slot_duration: {{ rec_slot_duration }},
+            uploads_per_mix: {{ uploads_per_mix }},
+            rec_tolerance_sec: {{ rec_tolerance_sec }},
+            max_upload_size: {{ max_upload_size }},
+            start_window: 15,
+            expiration_zone: 5
+        };
+        let uploadCount = 0;
+        let uploads = [];
+        let isClicked = false;
+        let isReady = false;
+        let isChanting = false;
+        let isUnmuted = false;
+        let refChantURL = null;
+        let mixChantURL = null;
+        let isWindow = false;
+        let isWaiting = false;
+        let isRecording = false;
+        let isStopTrigger = false;
+        let isUploading = false;
+        let isPlaying = false;
+        let ws = null;
+        let mediaRecorder = null;
+        let recordedChunks = [];
+        let localBlob = null;
+        let localURL = null;
+        let activeTokens = []; // Array of { token, expires_at }
+        let currentContributors = {}; // Array of { token, country_code }
+        const els = {
+            chantingStatusText: document.getElementById('chanting-status-text'),
+            timeSlotRemaining: document.getElementById('time_slot_remaining'),
+            uploadsPerMix: document.getElementById('uploads_per_mix'),
+            uploadCount: document.getElementById('upload_count'),
+            toleranceVal: document.getElementById('tolerance-val'),
+            slotDurationVal1: document.getElementById('slot-duration-val-1'),
+            slotDurationVal2: document.getElementById('slot-duration-val-2'),
+            recSlotDuration: document.getElementById('rec-slot-duration'),
+            recordingIndicator: document.getElementById('recording-indicator'),
+            recordingStatusText: document.getElementById('recording-status-text'),
+            btnStart: document.getElementById('btn-start'),
+            btnStop: document.getElementById('btn-stop'),
+            btnSave: document.getElementById('btn-save'),
+            btnLoad: document.getElementById('btn-load'),
+            btnUpload: document.getElementById('btn-upload'),
+            btnPlay: document.getElementById('btn-play'),
+            btnUnmute: document.getElementById('btn-unmute'),
+            fileInput: document.getElementById('file-input'),
+            tokensList: document.getElementById('tokens-list'),
+            contributorsList: document.getElementById('contributors-list'),
+            statusMessages: document.getElementById('status-messages'),
+            chantAudioPlayer: document.getElementById('chant-audio-player'),
+            localAudioPlayer: document.getElementById('local-audio-player')
+        };
+        function convertToMB(size) {
+            if (size > 1024 * 1024) return `${Math.floor(size / 1024 / 1024).toFixed(1)} MB`;
+            return `${Math.floor(size / 1024).toFixed(1)} KB`;
+        }
+        function initDisplay() {
+            els.uploadsPerMix.textContent = config.uploads_per_mix;
+            els.toleranceVal.textContent = config.rec_tolerance_sec;
+            els.slotDurationVal1.textContent = config.time_slot_duration;
+            els.slotDurationVal2.textContent = config.time_slot_duration;
+            els.recSlotDuration.textContent = config.rec_slot_duration;
+        }
+        function getIntUnixTime() {
+            return Math.floor(Date.now() / 1000);
+        }
+        function calculateTimes(now) {
+            const timeSlotIndex =  Math.floor(now / config.time_slot_duration);
+            const timeSlotStart = config.time_slot_duration * timeSlotIndex;
+            const timeSlotRemaining = timeSlotStart + config.time_slot_duration - now;
+            return {
+                timeSlotIndex,
+                timeSlotStart,
+                timeSlotRemaining
+            };
+        }
+        function updateDisplay() {
+            const times = calculateTimes(getIntUnixTime());
+            els.btnUnmute.textContent = isUnmuted ? '🔇 Mute' : '🔊 Unmute';
+            els.btnUnmute.disabled = !isReady;
+            if (isReady && isClicked) {
+                if (!isChanting) {
+                    if (times.timeSlotRemaining === config.time_slot_duration) {
+                        if (isWaiting) startChanting(refChantURL);
+                        else startChanting(mixChantURL);
+                    }
+                    else els.chantingStatusText.textContent = `Chant starts in ${times.timeSlotRemaining}s unless muted.`;
+                }
+                else  els.chantingStatusText.textContent = `New chant mix follows ${config.uploads_per_mix} global recording uploads.`;
+            }
+            isWindow = times.timeSlotRemaining <= config.start_window;
+            isntToken = activeTokens.length === 0;
+            isntLocalBlob = localBlob === null;
+            els.timeSlotRemaining.textContent = times.timeSlotRemaining;
+            els.uploadCount.textContent = uploadCount;
+            if (isWaiting) {
+                if (isWindow) {
+                    els.recordingIndicator.classList.add('ready');
+                    els.chantingStatusText.textContent = `Recording starts in ${times.timeSlotRemaining}s.`;
+                }
+                else {
+                    isWaiting = false;
+                    isRecording = true;
+                    startRecording();
+                }
+            }
+            if (isRecording) {
+                if (isStopTrigger && !isWindow) els.btnStop.click();
+                else {
+                    if (!isStopTrigger && isWindow) isStopTrigger = true;
+                    els.recordingIndicator.classList.remove('ready');
+                    els.recordingIndicator.classList.add('active');
+                    els.recordingStatusText.textContent = `Recording in progress, ends in ${times.timeSlotRemaining}s.`;
+                }
+            }
+            if (!isWaiting && !isRecording) {
+                els.recordingIndicator.classList.remove('ready', 'active');
+                const prefix = `Not recording. <I>Start</I> button can be pressed `
+                if (isWindow) els.recordingStatusText.innerHTML = `${prefix} now.`;
+                else els.recordingStatusText.innerHTML = `${prefix} in ${times.timeSlotRemaining - config.start_window}s.`;
+            }
+            if (isPlaying) els.btnPlay.textContent = '⏸ Pause';
+            else els.btnPlay.textContent = '▶ Play';
+            isBusy = isWaiting || isRecording || isPlaying || isUploading
+            els.btnStart.disabled = !isWindow || isBusy;
+            els.btnStop.disabled = !(isWaiting || isRecording || isPlaying) || isUploading;
+            els.btnPlay.disabled = isntLocalBlob || isWaiting || isRecording || isUploading;
+            els.btnSave.disabled = isntLocalBlob || isBusy;
+            els.btnLoad.disabled = isBusy;
+            els.btnUpload.disabled = isntToken || isntLocalBlob || isBusy;
+        }
+        function addToken(token, expiresAt) {
+            if (activeTokens.some(t => t.token === token)) return;
+            activeTokens.push({ token, expires_at: expiresAt });
+            activeTokens.sort((a, b) => a.expires_at - b.expires_at);
+        }
+        function removeToken(token) {
+            activeTokens = activeTokens.filter(t => t.token !== token);
+        }
+        function renderTokens() {
+            els.tokensList.innerHTML = '';
+            if (activeTokens.length === 0) {
+                const div = document.createElement('div');
+                div.className = 'token-item';
+                div.innerHTML = 'Waiting for tokens...';
+                els.tokensList.appendChild(div);
+                return;
+            }
+            activeTokens.forEach(t => {
+                const remaining = t.expires_at - getIntUnixTime();
+                const isExpiringSoon = remaining <= config.expiration_zone;
+                const isExpired = remaining <= 0;
+                if (isExpired) {
+                    removeToken(t.token);
+                    return;
+                }
+                const div = document.createElement('div');
+                div.className = 'token-item' + (isExpiringSoon ? ' expiring-soon' : '');
+                div.innerHTML = `
+                    <span class="token-value">${t.token}</span>
+                    <span class="token-time">${remaining}s</span>
+                `;
+                els.tokensList.appendChild(div);
+            });
+        }
+        function renderContributors() {
+            els.contributorsList.innerHTML = '';
+            if (Object.keys(currentContributors).length === 0) {
+                const div = document.createElement('div');
+                div.className = 'token-item';
+                div.innerHTML = 'Waiting for chant mix...';
+                els.contributorsList.appendChild(div);
+                return;
+            }
+            for (const token in currentContributors) {
+                const isContributor = uploads.includes(token);
+                const country_code = currentContributors[token];
+                const div = document.createElement('div');
+                div.className = 'token-item' + (isContributor ? ' contributor' : '');
+                div.innerHTML = `
+                    <span class="token-value">${token}</span>
+                    <img class="token-flag" src="/flag/${country_code}">
+                `;
+                els.contributorsList.appendChild(div);
+            }
+        }
+        function addStatusMessage(msg, type = 'info') {
+            const div = document.createElement('div');
+            div.className = `status-item status-${type}`;
+            div.innerHTML = msg;
+            els.statusMessages.prepend(div);
+            while (els.statusMessages.children.length > 20) els.statusMessages.removeChild(els.statusMessages.lastChild);
+        }
+        function connectWebSocket() {
+            const wsUrl = `ws${window.location.protocol === 'https:' ? 's' : ''}://${window.location.host}/ws`;
+            ws = new WebSocket(wsUrl);
+            ws.onopen = () => { };
+            ws.onmessage = (event) => {
+                try {
+                    if (typeof event.data !== 'string') storeChant(event.data);
+                    else handleMessage(JSON.parse(event.data));
+                } catch (e) { console.error('Error parsing server message:', e); }
+            };
+            ws.onclose = () => {
+                addStatusMessage('Server disconnected. Reconnecting in 5s...', 'warning');
+                setTimeout(connectWebSocket, 5000);
+            };
+            ws.onerror = (err) => {
+                addStatusMessage('Server connection error.', 'error');
+                console.error('WebSocket error:', err);
+            };
+        }
+        function handleMessage(data) {
+            switch (data.type) {
+                case 'sync':
+                    addStatusMessage(`Client #${data.client_id} connected.`, 'info');
+                    const serverTimeOffset = data.now - Date.now();
+                    if (serverTimeOffset / 1000 <= 1.0) addStatusMessage(`Client time synchronized with server within 1s.`, 'success');
+                    else addStatusMessage(`Client time leads server by ${parseFloat(serverTimeOffset.toFixed(2))}s`, 'warning');
+                    break;
+                case 'rec_slot_grant':
+                    addToken(data.token, data.expires_at);
+//                    addStatusMessage(`Upload token granted. Token expires in ${data.expires_at - getIntUnixTime()}s.`, 'success');
+                    break;
+                case 'upload_count':
+                    uploadCount = data.upload_count;
+                    break;
+                case 'mix_contributors':
+                    currentContributors = Object.fromEntries(data.contributors.flatMap(obj => Object.entries(obj)).sort(([a], [b]) => a.localeCompare(b)));
+                    break;
+                case 'error':
+                    addStatusMessage(`Server Error: ${data.message}`, 'error');
+                    break;
+                default:
+                    console.log('Unknown message type:', data.type);
+            }
+        }
+        function storeChant(blob) {
+            URL.revokeObjectURL(mixChantURL);
+            if (!refChantURL) {
+                refChantURL = URL.createObjectURL(blob);
+                els.chantAudioPlayer.src = refChantURL;
+                els.chantAudioPlayer.load(); isReady = true;
+                els.chantAudioPlayer.pause(); isChanting = false;
+                els.chantAudioPlayer.muted = !isUnmuted
+                addStatusMessage(`Reference chant dowloaded: ${convertToMB(blob.size)}.`, 'success');
+                updateDisplay();
+            }
+            else addStatusMessage(`Mix chant dowloaded: ${convertToMB(blob.size)}.`, 'success');
+            mixChantURL = URL.createObjectURL(blob);
+        }
+        function checkAudioSupport() {
+            if (!!els.localAudioPlayer.canPlayType && !!els.chantAudioPlayer.canPlayType) return true;
+            const response = audio.canPlayType(type);
+            return response === 'probably' || response === 'maybe';
+            return false;
+        }
+        function startChanting(url) {
+            //console.log(`start chanting with ${url}`);
+            isChanting = true;
+            els.chantAudioPlayer.src = url;
+            els.chantAudioPlayer.load();
+            els.chantAudioPlayer.play().catch((e) => {
+                isChanting = false;
+                addStatusMessage(`Audio player error: ${e}.`, 'error');
+             });
+             updateDisplay();
+        }
+        async function startRecording() {
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                addStatusMessage("Microphone access is blocked.", 'error');
+                console.error("MediaDevices API not supported in this context.");
+                isRecording = false;
+                updateDisplay();
+                return;
+            }
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus"});
+                recordedChunks = [];
+                mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) { recordedChunks.push(e.data); } };
+                mediaRecorder.onstop = () => {
+                    if (recordedChunks.length > 0) {
+                        localBlob = new Blob(recordedChunks, { type: 'audio/webm' });
+                        if (localBlob.size > config.max_upload_size) addStatusMessage(`Warning: Recording size (${(localBlob.size/1024/1024).toFixed(1)}MB) exceeds limit.`, 'warning');
+                        URL.revokeObjectURL(localURL);
+                        localURL = URL.createObjectURL(localBlob);
+                        els.localAudioPlayer.src = localURL;
+                    }
+                };
+                mediaRecorder.start();
+            } catch (err) {
+                isRecording = false
+                addStatusMessage(`Microphone access denied: ${err.message}`, 'error');
+                updateDisplay();
+                console.error(err);
+            }
+        }
+        async function getDuration(blob) {
+            const arrayBuffer = await blob.arrayBuffer();
+            const audioContext = new AudioContext();
+            const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+            return audioBuffer.duration;
+        }
+        async function uploadRecording(blob) {
+            function done() {
+                isUploading = false;
+                updateDisplay();
+            }
+            addStatusMessage('Checking duration...', 'info');
+            const duration_sec = await getDuration(blob);
+            const delta_sec = Math.abs(duration_sec - config.time_slot_duration);
+            if (delta_sec > config.rec_tolerance_sec) {
+                addStatusMessage(`Audio duration out of tolerance by: ${delta_sec.toFixed(1)}s.`)
+                done();
+                return;
+            }
+            let token = null;
+            for (let i = 0; i < activeTokens.length; i++) {
+                const t = activeTokens[i];
+                const remaining = t.expires_at - getIntUnixTime();
+                if (remaining <= 0) {
+                    removeToken(t.token);
+                    i--;
+                    continue;
+                }
+                if (remaining <= config.expiration_zone) continue;
+                token = t.token;
+                removeToken(token);
+                break;
+            }
+            if (token === null) {
+                addStatusMessage('No valid tokens available for upload.', 'error');
+                done();
+                return;
+            }
+            const formData = new FormData();
+            formData.append('token', token);
+            formData.append('file', localBlob);
+            addStatusMessage(`Uploading with token ${token}...`, 'info');
+            try {
+                response = await fetch('/upload', { method: 'POST', body: formData })
+                let errorData = null;
+                if (!response.ok) throw new Error(response.status);
+                const json = await response.json();
+                if (json.status === "Upload successful.") {
+                    uploads.push(token);
+                    addStatusMessage(json.status, 'success');
+                }
+                else throw new Error(json.status);
+            }
+            catch (e) { addStatusMessage(`${e.message}`, 'error'); }
+            finally { done(); }
+        }
+        els.chantAudioPlayer.addEventListener('ended', () => {
+            isChanting = false;
+            updateDisplay();
+        });
+        els.localAudioPlayer.addEventListener('ended', () => {
+            isPlaying = false;
+            updateDisplay();
+        });
+        els.btnUnmute.addEventListener('click', () => {
+            isUnmuted = !isUnmuted;
+            els.chantAudioPlayer.muted = !isUnmuted;
+            updateDisplay();
+        });
+        els.btnStart.addEventListener('click', () => {
+            isWaiting = true; updateDisplay();
+        });
+        els.btnStop.addEventListener('click', () => {
+            if (isWaiting) isWaiting = false;
+            if (isRecording) {
+                isRecording = false;
+                isStopTrigger = false;
+                if (mediaRecorder) {
+                    mediaRecorder.stop();
+                    mediaRecorder.stream.getTracks().forEach(track => track.stop());
+                }
+            }
+            if (isPlaying) {
+                isPlaying = false;
+                els.localAudioPlayer.pause();
+                els.localAudioPlayer.currentTime = 0;
+            }
+            updateDisplay();
+        });
+        els.btnPlay.addEventListener('click', () => {
+            if (els.localAudioPlayer.paused) {
+                els.localAudioPlayer.play().then(() => { isPlaying = true; }).catch(e => { addStatusMessage("Playback failed: " + e.message, 'error'); });
+            } else {
+                els.localAudioPlayer.pause();
+                isPlaying = false;
+            }
+            updateDisplay();
+        });
+        els.btnSave.addEventListener('click', () => {
+            if (!localURL) return;
+            const a = document.createElement('a');
+            a.href = localURL;
+            a.download = `chant_${Date.now()}.webm`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        });
+        els.btnLoad.addEventListener('click', () => {
+            els.fileInput.click();
+        });
+        els.fileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            if (file.size > config.max_upload_size) {
+                addStatusMessage(`Error: audio file size (${convertToMB(file.size)}) exceeds max limit: ${convertToMB(config.max_upload_size)}.`, 'error');
+                els.fileInput.value = '';
+                return;
+            }
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                localBlob = new Blob([event.target.result], { type: file.type });
+                URL.revokeObjectURL(localURL);
+                localURL = URL.createObjectURL(localBlob);
+                els.localAudioPlayer.src = localURL;
+                addStatusMessage(`Audio file loaded successfully: ${file.name}`, 'success');
+            };
+            reader.readAsArrayBuffer(file);
+            els.fileInput.value = '';
+        });
+        els.btnUpload.addEventListener('click', () => {
+            if (!localBlob) {
+                addStatusMessage('No recording to upload.', 'error');
+                return;
+            }
+            isUploading = true; updateDisplay();
+            uploadRecording(localBlob);
+        });
+        window.addEventListener('DOMContentLoaded', () => {
+            initDisplay();
+            if (!checkAudioSupport()) {
+                const msg = 'This browser does not support WebM audio.';
+                els.recordingStatusText.textContent = msg;
+                addStatusMessage(msg, 'error');
+                return;
+            }
+            connectWebSocket();
+            function update() {
+                updateDisplay();
+                renderTokens();
+                renderContributors();
+            }
+            const intMs = Date.now() % 1000;
+            const delay = intMs === 0 ? 0 : 1000 - intMs;
+            setTimeout(() => {
+                update();
+                setInterval(update, 1000);
+            }, delay);
+        });
+        document.addEventListener('click', () => {
+            isClicked = true;
+            updateDisplay();
+        }, { once: true });
+    </script>
+</body>
+</html>
