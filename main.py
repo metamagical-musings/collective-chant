@@ -18,13 +18,13 @@ import geoip2.database
 import geoip2.errors
 
 class Const:
-    error_level = 3 # 0==FATAL, 1==COURSE, 2==FINE, 3==TIMER
+    error_level = 2 # 1==COURSE, 2==FINE
     words_per_token = 3
-    time_slot_duration = 60 # sec
+    time_slot_duration_sec = 60 # sec
     rec_slots_per_time_slot = 1.5 # float
     rec_slot_lifespan = 6 # number of time_slots
-    rec_slot_duration = rec_slot_lifespan * time_slot_duration
-    rec_tolerance_sec = 11 # sec
+    rec_slot_duration_sec = rec_slot_lifespan * time_slot_duration_sec
+    rec_tolerance_sec = 11
     uploads_dir = "uploads"
     mixes_dir = "mixes"
     mix_timeout = 300
@@ -33,22 +33,17 @@ class Const:
     max_queue_size = 100
     ref_chant = "mantra.webm"
     word_list = "bip39_english.txt"
-    silence_thresh = -60 # db
-    min_silence_len = 200 # ms
-    target_dbfs = -14.0 # db
-    padding = 0.5 # sec
-    audio_bitrate = "48k" # bps
 
 class GetCurrent:
     @staticmethod
     def time_slot_index(now):
-        return now // Const.time_slot_duration
+        return now // Const.time_slot_duration_sec
     @staticmethod
     def time_slot_start(now):
-        return Const.time_slot_duration * __class__.time_slot_index(now)
+        return Const.time_slot_duration_sec * __class__.time_slot_index(now)
     @staticmethod
     def time_slot_remaining(now):
-        return __class__.time_slot_start(now) + Const.time_slot_duration - now
+        return __class__.time_slot_start(now) + Const.time_slot_duration_sec - now
 
 class Mix:
     upload_count = 0
@@ -75,10 +70,10 @@ class Mix:
             os.replace(temp_path, file_path)
         except Exception as e:
             if temp_path.exists(): temp_path.unlink(missing_ok=True)
-            log(f"Error saving upload {filename}", 0, "[Mix]")
+            log(f"Error saving upload {filename}", 1, "[Mix]")
     @staticmethod
     def launch_mix_process(mix_id):
-        cmd = ["nice", "-n", "19", "ionice", "-c", "3", sys.executable, "mix_worker.py", str(mix_id), Const.uploads_dir, Const.mixes_dir, "mix.webm"]
+        cmd = ["nice", "-n", "19", "ionice", "-c", "3", sys.executable, "mix_worker.py", str(mix_id), Const.uploads_dir, Const.mixes_dir, Const.ref_chant]
         log(f"Launching mix process: {' '.join(cmd)}", 2, "[Mix]")
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         log(f"Mix process started with PID: {process.pid}", 1,  "[Mix]")
@@ -216,7 +211,9 @@ async def lifespan(app: FastAPI):
         task.cancel()
         try: await task
         except asyncio.CancelledError: pass
-        except Exception as e: log(f"Error while cancelling background task: {e}", 0, "[App]")
+        except Exception as e:
+            log(f"Error while cancelling background task: {e}", 1, "[App]")
+            raise
 
 app = FastAPI(title="Universe", version="1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_methods=["*"], allow_headers=["*"], allow_credentials=True, # remove null for production
@@ -228,6 +225,7 @@ wordlist = BIP39WordList()
 socket = WS()
 token_store = TokenState()
 Path(Const.uploads_dir).mkdir(parents=True, exist_ok=True)
+Path(Const.mixes_dir).mkdir(parents=True, exist_ok=True)
 
 async def mix_worker():
     log(f"Starting background worker...", 1, "[Mix]")
@@ -265,7 +263,7 @@ async def token_worker():
         log(f"New time slot #{time_slot_index}", 2, "[Token]")
         new_allocations = get_prev_allocations(time_slot_index + 1) - get_prev_allocations(time_slot_index)
         new_tokens = []
-        expires_at = GetCurrent.time_slot_start(now) + Const.rec_slot_duration
+        expires_at = GetCurrent.time_slot_start(now) + Const.rec_slot_duration_sec
         for i in range(new_allocations):
             token = wordlist.generate_token()
             await token_store.add_token(token, expires_at)
@@ -392,10 +390,10 @@ async def status_endpoint():
     now = int(time.time())
     return {
         "current_time": now,
-        "time_slot_duration": Const.time_slot_duration,
+        "time_slot_duration_sec": Const.time_slot_duration_sec,
         "current_time_slot_index": GetCurrent.time_slot_index(now),
         "current_time_slot_remaining": GetCurrent.time_slot_remaining(now),
-        "rec_slot_duration": Const.rec_slot_duration,
+        "rec_slot_duration_sec": Const.rec_slot_duration_sec,
         "uploads_per_mix": Const.uploads_per_mix,
         "upload_count": Mix.upload_count,
         "token_count": await token_store.get_token_count(),
@@ -412,8 +410,8 @@ def get_flag(country_code: str):
 async def root(request: Request):
     context = {
         "request": request,
-        "time_slot_duration": Const.time_slot_duration,
-        "rec_slot_duration": Const.rec_slot_duration,
+        "time_slot_duration_sec": Const.time_slot_duration_sec,
+        "rec_slot_duration_sec": Const.rec_slot_duration_sec,
         "rec_tolerance_sec": Const.rec_tolerance_sec,
         "uploads_per_mix": Const.uploads_per_mix,
         "max_upload_size": Const.max_upload_size,
@@ -427,7 +425,6 @@ async def favicon():
 def log(message, level, worker=""):
     if level > Const.error_level: return
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {worker} {message}")
-    if level == 0: sys.exit(1)
 
 if __name__ == "__main__":
     uvicorn.run(

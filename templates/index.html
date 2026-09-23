@@ -127,8 +127,8 @@
     </div>
     <script>
         const config = {
-            time_slot_duration: {{ time_slot_duration }},
-            rec_slot_duration: {{ rec_slot_duration }},
+            time_slot_duration_sec: {{ time_slot_duration_sec }},
+            rec_slot_duration_sec: {{ rec_slot_duration_sec }},
             uploads_per_mix: {{ uploads_per_mix }},
             rec_tolerance_sec: {{ rec_tolerance_sec }},
             max_upload_size: {{ max_upload_size }},
@@ -188,17 +188,17 @@
         function initDisplay() {
             els.uploadsPerMix.textContent = config.uploads_per_mix;
             els.toleranceVal.textContent = config.rec_tolerance_sec;
-            els.slotDurationVal1.textContent = config.time_slot_duration;
-            els.slotDurationVal2.textContent = config.time_slot_duration;
-            els.recSlotDuration.textContent = config.rec_slot_duration;
+            els.slotDurationVal1.textContent = config.time_slot_duration_sec;
+            els.slotDurationVal2.textContent = config.time_slot_duration_sec;
+            els.recSlotDuration.textContent = config.rec_slot_duration_sec;
         }
         function getIntUnixTime() {
             return Math.floor(Date.now() / 1000);
         }
         function calculateTimes(now) {
-            const timeSlotIndex =  Math.floor(now / config.time_slot_duration);
-            const timeSlotStart = config.time_slot_duration * timeSlotIndex;
-            const timeSlotRemaining = timeSlotStart + config.time_slot_duration - now;
+            const timeSlotIndex =  Math.floor(now / config.time_slot_duration_sec);
+            const timeSlotStart = config.time_slot_duration_sec * timeSlotIndex;
+            const timeSlotRemaining = timeSlotStart + config.time_slot_duration_sec - now;
             return {
                 timeSlotIndex,
                 timeSlotStart,
@@ -211,7 +211,7 @@
             els.btnUnmute.disabled = !isReady;
             if (isReady && isClicked) {
                 if (!isChanting) {
-                    if (times.timeSlotRemaining === config.time_slot_duration) {
+                    if (times.timeSlotRemaining === config.time_slot_duration_sec) {
                         if (isWaiting) startChanting(refChantURL);
                         else startChanting(mixChantURL);
                     }
@@ -440,7 +440,7 @@
             }
             addStatusMessage('Checking duration...', 'info');
             const duration_sec = await getDuration(blob);
-            const delta_sec = Math.abs(duration_sec - config.time_slot_duration);
+            const delta_sec = Math.abs(duration_sec - config.time_slot_duration_sec);
             if (delta_sec > config.rec_tolerance_sec) {
                 addStatusMessage(`Audio duration out of tolerance by: ${delta_sec.toFixed(1)}s.`)
                 done();
