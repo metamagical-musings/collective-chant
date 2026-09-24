@@ -5,3 +5,5 @@ jinja2
 python-multipart
 streaming-form-data
 geoip2
+pydub
+audioop-lts
