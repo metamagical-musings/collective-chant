@@ -8,7 +8,6 @@ class Const:
     uploads_dir = "uploads"
     mixes_dir = "mixes"
     ref_path = "static/mantra.webm"
-    min_contributors = 2
     tolerance_sec = 1.0
     headroom_db = 6.0
     target_db = -14.0
@@ -52,19 +51,19 @@ def decode_webm(path):
     # Force a common format so overlay arithmetic is well defined.
     return audio.set_frame_rate(48000).set_channels(1).set_sample_width(2)
 
-def trim_leading_trailing_silence(audio, thresh_db, min_silence_ms):
-    ranges = silence.detect_nonsilent(audio, min_silence_len=min_silence_ms, silence_thresh=thresh_db)
+def trim_leading_trailing_silence(audio):
+    ranges = silence.detect_nonsilent(audio, min_silence_len=Const.min_silence_ms, silence_thresh=Const.silence_thresh_db)
     if not ranges:
-        print(f"  REJECT: no non-silent content detected")
+        print(f"  REJECT: Entirely silent (or below threshold)")
         return None
     start, end = ranges[0][0], ranges[-1][1]
-    return audio[start:end]
+    return audio[start:end]  
 
 def check_duration(audio, ref_duration_sec):
     dur_sec = len(audio) / 1000.0
     delta_sec = abs(dur_sec - ref_duration_sec);
     if (delta_sec > Const.tolerance_sec):
-        print(f"  REJECT {path.name}: {delta_sec:.1f}s delta duration exceeds allowed tolerance {Const.tolerance_sec}s")
+        print(f"  REJECT: {delta_sec:.1f}s delta duration exceeds allowed tolerance {Const.tolerance_sec}s")
         return False
     return True
     
@@ -143,60 +142,44 @@ def main():
         return 0
     except Exception as exc:
         print(f"FATAL: {type(exc).__name__}: {exc}")
+        #raise
         return 1
     finally: lock.release()
 
 def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
     def print_stats(name, audio):
         print(f"  OK {name}  {round(len(audio) / 1000.0, 3)}s  {round(audio.dBFS, 2)}dBFS")
-
     print(f"[Worker {mix_id}] Start reference audio processing...")
     ref_seg = decode_webm(ref_path)
-    timer.tick("decode")
     if ref_seg is None: raise ValueError("Invalid reference audio")
     ref_seg = normalize_to_target(ref_seg, Const.target_db, Const.headroom_db)
-    timer.tick("normalize")
     print_stats(ref_path.name, ref_seg)
     ref_duration_sec = len(ref_seg) / 1000.0
     mixed_parts = []
-    mixed_parts.append(ref_seg) # append multiple times?
+    mixed_parts.append(ref_seg) # append reference multiple times?
     print(f"[Worker {mix_id}] Starting processing of candidate uploads...")
     candidates = sorted(p for p in uploads_dir.iterdir() if p.is_file() and p.name.endswith(".webm"))
-    if not candidates:
-        print("Uploads directory is empty.")
-        return
     print(f"Found {len(candidates)} candidate file(s).")
     contributors = []
-    rejected = 0
     for path in candidates:
+        print(f"Processing {path.name}...")
         parsed = parse_filename(path.name)
-        if not parsed:
-            rejected += 1
-            continue
+        if not parsed: continue
         md5, token, ip = parsed
         seg = decode_webm(path)
         timer.tick("decode")
-        if seg is None:
-            rejected += 1
-            continue
-        seg = trim_leading_trailing_silence(seg, Const.silence_thresh_db, Const.min_silence_ms)
+        if seg is None: continue
+        seg = trim_leading_trailing_silence(seg)
         timer.tick("trim_silence")
-        if seg is None:
-            rejected += 1
-            continue
-        if not check_duration(seg, ref_duration_sec):
-            rejected += 1
-            continue
+        if seg is None: continue
+        if not check_duration(seg, ref_duration_sec): continue
         seg = normalize_to_target(seg, Const.target_db, Const.headroom_db)
         timer.tick("normalize")
         mixed_parts.append(seg)
         contributors.append({token: ip})
         print_stats(path.name, seg)
     timer.tick("all_candidates")
-    print(f"Accepted {len(contributors)}, rejected {rejected}.")
-    if len(mixed_parts) < Const.min_contributors:
-        print(f"Below min contributors ({Const.min_contributors}); no mix produced.")
-        return
+    print(f"Accepted {len(contributors)} of {len(candidates)}.")
     print(f"Mixing {len(mixed_parts)} voices (equal-gain sum)...")
     mixed = equal_gain_mix(mixed_parts)
     timer.tick("mix")
