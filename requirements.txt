@@ -7,3 +7,4 @@ streaming-form-data
 geoip2
 pydub
 audioop-lts
+faster_whisper

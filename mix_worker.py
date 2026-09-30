@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
-import json, os, re, shutil, sys, time
+import json, os, re, shutil, sys, time, numpy as np
+from scipy.signal import correlate
 from pathlib import Path
 from pydub import AudioSegment, effects, silence
 
@@ -13,6 +14,8 @@ class Const:
     target_db = -14.0
     silence_thresh_db = -50.0
     min_silence_ms = 150
+    decimation = 100
+    max_shift_ms = 1000
     bitrate = "48k" # bps
 
 class Timer:
@@ -67,11 +70,35 @@ def check_duration(audio, ref_duration_sec):
         return False
     return True
     
-def normalize_to_target(audio, target_db, headroom_db):
+def normalize_to_target(audio):
     peak = audio.max_dBFS
-    if peak > -180: audio = audio.apply_gain(-peak - headroom_db) # not digital silence
+    if peak > -180: audio = audio.apply_gain(-peak - Const.headroom_db) # not digital silence
     current = audio.dBFS
-    if current > -180: audio = audio.apply_gain(target_db - current)
+    if current > -180: audio = audio.apply_gain(Const.target_db - current)
+    return audio
+
+def compress_or_stretch_to_target(audio, ref_duration_ms):
+    factor = len(audio) / ref_duration_ms # >1 means audio is too long
+    return audio._spawn(audio.raw_data, overrides={"frame_rate": int(audio.frame_rate * factor)}).set_frame_rate(audio.frame_rate)
+
+def cross_correlate_to_target(audio, ref_audio):
+    sig = np.array(audio.get_array_of_samples(), dtype=np.float32)
+    ref = np.array(ref_audio.get_array_of_samples(), dtype=np.float32)
+    sig = np.abs(sig)
+    ref = np.abs(ref)
+    window = int(audio.frame_rate * 0.05) # smooth (~50 ms)
+    kernel = np.ones(window) / window
+    sig = np.convolve(sig, kernel, mode='same')
+    ref = np.convolve(ref, kernel, mode='same')
+    sig = sig[::Const.decimation]
+    ref = ref[::Const.decimation]
+    corr = correlate(sig, ref, mode='full', method='fft')
+    lag = np.argmax(corr) - (len(ref) - 1)
+    lag_samples = lag * Const.decimation
+    lag_ms = int(1000 * lag_samples / audio.frame_rate)
+    print(f"lag: {lag_ms}")
+    if lag_ms > 0: audio = AudioSegment.silent(duration=lag_ms) + audio
+    else: audio = audio[-lag_ms:]
     return audio
 
 def equal_gain_mix(segments):
@@ -132,19 +159,19 @@ def main():
     if not ref_path.is_file():
         print(f"ERROR: reference audio not found: {ref_path}")
         return 1
-    lock = WorkerLock(mixes_dir)
-    if not lock.acquire():
-        print("Another worker holds the lock; exiting.")
-        return 0
+    # lock = WorkerLock(mixes_dir)
+    # if not lock.acquire():
+        # print("Another worker holds the lock; exiting.")
+        # return 0
     timer = Timer()
     try:
         run(mix_id, uploads_dir, mixes_dir, ref_path, timer)
         return 0
     except Exception as exc:
         print(f"FATAL: {type(exc).__name__}: {exc}")
-        #raise
+        raise
         return 1
-    finally: lock.release()
+    # finally: lock.release()
 
 def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
     def print_stats(name, audio):
@@ -152,9 +179,10 @@ def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
     print(f"[Worker {mix_id}] Start reference audio processing...")
     ref_seg = decode_webm(ref_path)
     if ref_seg is None: raise ValueError("Invalid reference audio")
-    ref_seg = normalize_to_target(ref_seg, Const.target_db, Const.headroom_db)
+    ref_seg = normalize_to_target(ref_seg)
     print_stats(ref_path.name, ref_seg)
-    ref_duration_sec = len(ref_seg) / 1000.0
+    ref_duration_ms = len(ref_seg)
+    ref_duration_sec = ref_duration_ms / 1000.0
     mixed_parts = []
     mixed_parts.append(ref_seg) # append reference multiple times?
     print(f"[Worker {mix_id}] Starting processing of candidate uploads...")
@@ -173,8 +201,12 @@ def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
         timer.tick("trim_silence")
         if seg is None: continue
         if not check_duration(seg, ref_duration_sec): continue
-        seg = normalize_to_target(seg, Const.target_db, Const.headroom_db)
+        seg = normalize_to_target(seg)
         timer.tick("normalize")
+        seg = compress_or_stretch_to_target(seg, ref_duration_ms)
+        timer.tick("strech_compress")
+        seg = cross_correlate_to_target(seg, ref_seg)
+        timer.tick("cross_correlate")
         mixed_parts.append(seg)
         contributors.append({token: ip})
         print_stats(path.name, seg)
@@ -192,12 +224,12 @@ def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
     contributors_path = mixes_dir / f"{mix_id}.json"
     write_json_atomic(contributors, contributors_path)
     timer.tick("publish")
-    for path in candidates:
-        try:
-            os.remove(path)
-            print(f"Deleted: {path.name}")
-        except FileNotFoundError: print(f"File not found (may have been deleted): {path.name}")
-        except PermissionError: print(f"Permission denied: {path.name}")
+    # for path in candidates:
+        # try:
+            # os.remove(path)
+            # print(f"Deleted: {path.name}")
+        # except FileNotFoundError: print(f"File not found (may have been deleted): {path.name}")
+        # except PermissionError: print(f"Permission denied: {path.name}")
     timer.report()
     print(f"Process complete. Mix: {mix_path}")
 
