@@ -185,8 +185,17 @@ def score_stanzas(chunks, *, max_word_errors=MAX_WORD_ERRORS, tmp_dir="chant_sta
         ScoreResult with per-stanza details and overall verdict.
     """
 
-    with open(Path(STANZA_FILE), 'r', encoding='utf-8') as f: chant_text = [line.rstrip() for line in f]
-    stanza_texts = [normalize_words(line) for line in chant_text]
+    with open(Path(STANZA_FILE), 'r', encoding='utf-8') as f:
+        chant_texts = []
+        current_block = []
+        for line in f:
+            line = line.rstrip()
+            if line: current_block.append(line)
+            elif current_block:
+                chant_texts.append(' '.join(current_block))
+                current_block = []
+        if current_block: chant_texts.append(' '.join(current_block))
+    stanza_texts = [normalize_words(line) for line in chant_texts]
     num_ref_stanzas = len(stanza_texts)
     tmp_path = Path(tmp_dir)
     if len(chunks) != num_ref_stanzas:
@@ -209,7 +218,7 @@ def score_stanzas(chunks, *, max_word_errors=MAX_WORD_ERRORS, tmp_dir="chant_sta
                 temperature=TEMPERATURE,
                 word_timestamps=False,
                 condition_on_previous_text=False,
-                initial_prompt=chant_text[chunk.index],
+                initial_prompt=chant_texts[chunk.index],
                 compression_ratio_threshold=2.0,
                 log_prob_threshold=-1.0,
                 no_speech_threshold=0.6,

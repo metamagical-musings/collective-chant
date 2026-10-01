@@ -35,7 +35,7 @@ def parse_args(argv=None):
     p.add_argument("--model", default=None, help=f"Model name override (e.g. tiny.en/base.en/small.en). Default: {wt.MODEL_NAME}")
     p.add_argument("--errors", type=int, default=None, help=f"Max word errors before rejection. Default: {wt.MAX_WORD_ERRORS}")
     p.add_argument("--threads", type=int, default=None, help="CTranslate2 CPU threads (affects speed AND reproducibility).")
-    p.add_argument("--stanza_file", type=str, default=None, help="JSON file with per-stanza word lists. ")
+    p.add_argument("--stanza_file", type=str, default=None, help="Text file with (possibly multi-line) stanzas separated by blank lines. ")
     return p.parse_args(argv)
 
 def apply_overrides(args) -> None:
