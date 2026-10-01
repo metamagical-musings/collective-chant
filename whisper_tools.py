@@ -23,16 +23,14 @@ Design notes:
 - The caller imposes a recording standard: inter-stanza pauses >1000ms.
 """
 
-import json, subprocess, shutil
+import json, subprocess, shutil, sys
 from pathlib import Path
 from faster_whisper import WhisperModel
 from pydub import AudioSegment, silence
 from difflib import SequenceMatcher
 
-CHANT_TEXT = "I am the light. I am the love. I am the truth. I am."
-STANZA_REPS = 6
 MAX_WORD_ERRORS = 3
-MODEL_NAME = "base"
+MODEL_NAME = "base.en"
 DEVICE = "cpu"
 COMPUTE_TYPE = "int8"
 BEAM_SIZE = 5
@@ -44,6 +42,8 @@ GAP_THRESHOLD_MS = 1000      # minimum gap to qualify as a stanza boundary
 MIN_SPEECH_MS = 250          # discard nonsilent segments shorter than this
 SILENCE_THRESH_OFFSET = 15   # dBFS offset below overall level for silence detect
 SEEK_STEP_MS = 10            # resolution of silence detection
+STANZA_FILE = "stanzas.txt"
+
 _MODEL = None
 
 class StanzaChunk:
@@ -66,10 +66,11 @@ class StanzaScore:
         self.accepted = accepted
 
 class ScoreResult:
-    def __init__(self, accepted, reason, num_stanzas, word_errors, error_rate, stanza_windows=None, transcript="", detected_language="en", language_probability=1.0, stanza_scores=None):
+    def __init__(self, accepted, reason, num_stanzas, num_ref_stanzas, word_errors, error_rate, stanza_windows=None, transcript="", detected_language="en", language_probability=1.0, stanza_scores=None):
         self.accepted = accepted
         self.reason = reason
         self.num_stanzas = num_stanzas
+        self.num_ref_stanzas = num_ref_stanzas
         self.word_errors = word_errors
         self.error_rate = error_rate
         self.stanza_windows = stanza_windows if stanza_windows is not None else []
@@ -143,8 +144,7 @@ def _audio_to_temp_wav(blob, tmp_dir, idx):
 
 def normalize_words(text: str) -> list[str]:
     """Lowercase, strip punctuation, split into bare word tokens."""
-    cleaned = "".join(ch if (ch.isalnum() or ch.isspace()) else " "
-                      for ch in text.lower())
+    cleaned = "".join(ch if (ch.isalnum() or ch.isspace()) else " " for ch in text.lower())
     return cleaned.split()
 
 def count_word_errors(reference, hypothesis):
@@ -157,9 +157,7 @@ def count_word_errors(reference, hypothesis):
     """
     matcher = SequenceMatcher(a=reference, b=hypothesis, autojunk=False)
     replace, delete, insert = 0, 0, 0
-    print()
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        print(tag, i1, i2, j1, j2)
         if tag == "equal": continue
         elif tag == "replace": replace += max(i2 - i1, j2 - j1) # Substitution(s)
         elif tag == "delete": delete += i2 - i1 # Words present in reference but missing from hypothesis
@@ -176,20 +174,23 @@ def count_word_errors(reference, hypothesis):
         "hyp_count": len(hypothesis),
     }
 
-def score_stanzas(chunks, stanza_texts, *, max_word_errors=MAX_WORD_ERRORS, tmp_dir="chant_stanzas", cleanup_tmp=True):
+def score_stanzas(chunks, *, max_word_errors=MAX_WORD_ERRORS, tmp_dir="chant_stanzas", cleanup_tmp=True):
     """Transcribe each stanza chunk independently and accumulate global WER.
     Args:
         chunks: Output from split_into_stanzas().
-        stanza_texts: One word-list per stanza (e.g. [["i","am","the","light",...], ...]). Must match len(chunks) or submission is rejected.
         max_word_errors: Global threshold across all stanzas.
         tmp_dir: Where to write temporary per-stanza WAVs for Whisper.
         cleanup_tmp: Delete temp files after scoring.
     Returns:
         ScoreResult with per-stanza details and overall verdict.
     """
+
+    with open(Path(STANZA_FILE), 'r', encoding='utf-8') as f: chant_text = [line.rstrip() for line in f]
+    stanza_texts = [normalize_words(line) for line in chant_text]
+    num_ref_stanzas = len(stanza_texts)
     tmp_path = Path(tmp_dir)
-    if len(chunks) != len(stanza_texts):
-        return ScoreResult(accepted=False, reason=f"detected {len(chunks)} stanzas, expected {len(stanza_texts)}", num_stanzas=len(chunks), word_errors=0, error_rate=0.0)
+    if len(chunks) != num_ref_stanzas:
+        return ScoreResult(accepted=False, reason=f"detected {len(chunks)} stanzas, expected {num_ref_stanzas}", num_stanzas=len(chunks), num_ref_stanzas=num_ref_stanzas, word_errors=0, error_rate=0.0)
     model = get_model()
     stanza_scores = []
     total_errors = 0
@@ -201,7 +202,19 @@ def score_stanzas(chunks, stanza_texts, *, max_word_errors=MAX_WORD_ERRORS, tmp_
             ref_words = stanza_texts[chunk.index]
             total_ref_words += len(ref_words)
             wav_file = _audio_to_temp_wav(chunk.audio, tmp_path, chunk.index)
-            segments, info = model.transcribe(str(wav_file), language="en", beam_size=BEAM_SIZE, temperature=TEMPERATURE, word_timestamps=True, condition_on_previous_text=False, initial_prompt=None, compression_ratio_threshold=2.0, log_prob_threshold=-1.0, no_speech_threshold=0.6)
+            segments, info = model.transcribe(
+                str(wav_file),
+                language="en",
+                beam_size=BEAM_SIZE,
+                temperature=TEMPERATURE,
+                word_timestamps=False,
+                condition_on_previous_text=False,
+                initial_prompt=chant_text[chunk.index],
+                compression_ratio_threshold=2.0,
+                log_prob_threshold=-1.0,
+                no_speech_threshold=0.6,
+                vad_filter=False
+            )
             words_list, parts = [], []
             for seg in segments:
                 parts.append(seg.text.strip())
@@ -220,6 +233,6 @@ def score_stanzas(chunks, stanza_texts, *, max_word_errors=MAX_WORD_ERRORS, tmp_
     denom = max(total_ref_words, 1)
     accepted = total_errors <= max_word_errors
     reason = "ok" if accepted else (f"{total_errors} total word errors > {max_word_errors} threshold")
-    return ScoreResult(accepted=accepted, reason=reason, num_stanzas=len(chunks), word_errors=total_errors, error_rate=total_errors / denom, stanza_windows=stanza_windows, transcript=" | ".join(all_transcripts), stanza_scores=stanza_scores)
+    return ScoreResult(accepted=accepted, reason=reason, num_stanzas=len(chunks), num_ref_stanzas=num_ref_stanzas, word_errors=total_errors, error_rate=total_errors / denom, stanza_windows=stanza_windows, transcript=" | ".join(all_transcripts), stanza_scores=stanza_scores)
 
 

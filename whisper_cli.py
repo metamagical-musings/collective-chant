@@ -3,13 +3,12 @@
 Test harness for whisper_tools.prepare_audio_for_whisper + score_stanzas.
 
 Usage:
-    python whisper_cli.py clip1.webm [clip2.webm ...] [--model tiny.en]
-                                    [--errors 3] [--reps 6] [--keep-wav]
+    python whisper_cli.py clip1.webm [clip2.webm ...] [--model tiny.en] [--errors 3]
 
 Behavior per clip:
     raw .webm -> prepare_audio_for_whisper() -> score_stanzas() -> report
-The ffmpeg-produced WAV is written next to the source as <stem>_asr.wav and
-deleted after scoring unless --keep-wav is set. Each run prints the resolved
+The ffmpeg-produced WAV is written next to the source as <stem>_asr.wav
+and is deleted after scoring. Each run prints the resolved
 config (so you can eyeball which model produced which numbers) and, at the
 end, a one-line-per-clip summary table plus aggregate timing.
 
@@ -33,22 +32,10 @@ def parse_args(argv=None):
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("clips", nargs="+", help="Uploaded .webm (or any ffmpeg-readable) files")
-    p.add_argument("--model", default=None,
-                   help=f"Model name override (e.g. tiny.en/base.en/small.en). Default: {wt.MODEL_NAME}")
-    p.add_argument("--errors", type=int, default=None,
-                   help=f"Max word errors before rejection. Default: {wt.MAX_WORD_ERRORS}")
-    p.add_argument("--reps", type=int, default=None,
-                   help=f"Expected stanza repetitions. Default: {wt.STANZA_REPS}")
-    p.add_argument("--threads", type=int, default=None,
-                   help="CTranslate2 CPU threads (affects speed AND reproducibility).")
-    p.add_argument("--keep-wav", action="store_true",
-                   help="Keep the intermediate _asr.wav instead of deleting it.")
-    p.add_argument("--json-dir", default=None,
-                   help="Also write each ScoreResult to <dir>/<stem>.json")
-    p.add_argument("--stanza-file", type=str, default=None,
-                   help="JSON file with per-stanza word lists. "
-                        "Format: [[\"i\",\"am\",...],[\"i\",\"am\",...],...]. "
-                        "Default: repeat CHANT_TEXT STANZA_REPS times.")                   
+    p.add_argument("--model", default=None, help=f"Model name override (e.g. tiny.en/base.en/small.en). Default: {wt.MODEL_NAME}")
+    p.add_argument("--errors", type=int, default=None, help=f"Max word errors before rejection. Default: {wt.MAX_WORD_ERRORS}")
+    p.add_argument("--threads", type=int, default=None, help="CTranslate2 CPU threads (affects speed AND reproducibility).")
+    p.add_argument("--stanza_file", type=str, default=None, help="JSON file with per-stanza word lists. ")
     return p.parse_args(argv)
 
 def apply_overrides(args) -> None:
@@ -57,8 +44,8 @@ def apply_overrides(args) -> None:
         wt.MODEL_NAME = args.model
     if args.errors is not None:
         wt.MAX_WORD_ERRORS = args.errors
-    if args.reps is not None:
-        wt.STANZA_REPS = args.reps
+    if args.stanza_file is not None:
+        wt.STANZA_FILE = args.stanza_file
     if args.threads is not None:
         # CTranslate2 reads this at model-construction time, so set before get_model().
         os.environ["OMP_NUM_THREADS"] = str(args.threads)
@@ -67,18 +54,11 @@ def print_header(args) -> None:
     print("=" * 72)
     print(f"model={wt.MODEL_NAME}")
     print(f"beam_size={wt.BEAM_SIZE}  temperature={wt.TEMPERATURE}  "
-          f"max_word_errors={wt.MAX_WORD_ERRORS}  expected_reps={wt.STANZA_REPS}")
-    print(f"chant_text={wt.CHANT_TEXT!r}")
+          f"max_word_errors={wt.MAX_WORD_ERRORS}  stanza_file={wt.STANZA_FILE}")
     print("=" * 72)
 
 def process_one(clip: Path, args) -> dict:
     wav = clip.with_name(clip.stem + "_asr.wav")
-    json_out = None
-    if args.json_dir:
-        jdir = Path(args.json_dir)
-        jdir.mkdir(parents=True, exist_ok=True)
-        json_out = jdir / (clip.stem + ".json")
-
     t0 = time.perf_counter()
     try:
         wt.prepare_audio_for_whisper(clip, wav)
@@ -86,13 +66,6 @@ def process_one(clip: Path, args) -> dict:
         dt = time.perf_counter() - t0
         print(f"\n[REJECT/prep] {clip.name}: {exc}  ({dt:.1f}s)")
         return {"clip": clip.name, "status": "PREP_FAIL", "secs": dt}
-
-    if args.stanza_file:
-        stanza_texts = json.loads(Path(args.stanza_file).read_text())
-    else:
-        # For now: same chant repeated STANZA_REPS times.
-        base_words = wt.normalize_words(wt.CHANT_TEXT)
-        stanza_texts = [base_words] * wt.STANZA_REPS
 
     try:
         len_audio, chunks = wt.split_into_stanzas(wav)
@@ -111,7 +84,7 @@ def process_one(clip: Path, args) -> dict:
         print(f"  gap: {chunks[i+1].start_ms - c.end_ms}ms")
 
     t1 = time.perf_counter()
-    res = wt.score_stanzas(chunks, stanza_texts, max_word_errors=wt.MAX_WORD_ERRORS, cleanup_tmp=True)
+    res = wt.score_stanzas(chunks, max_word_errors=wt.MAX_WORD_ERRORS, cleanup_tmp=True)
     t2 = time.perf_counter()
 
     prep_s, tr_s = t1 - t0, t2 - t1
@@ -119,7 +92,7 @@ def process_one(clip: Path, args) -> dict:
     verdict = "ACCEPT" if res.accepted else "REJECT"
     print(f"\n[{verdict}] {clip.name}")
     print(f"  reason            : {res.reason}")
-    print(f"  stanzas           : {res.num_stanzas} / {wt.STANZA_REPS}")
+    print(f"  stanzas           : {res.num_stanzas} / {res.num_ref_stanzas}")
     print(f"  word_errors       : {res.word_errors}  (rate={res.error_rate:.1%})")
     print(f"  timing            : prep+split={prep_s:.1f}s  transcribe={tr_s:.1f}s  "
           f"total={t2-t0:.1f}s")
@@ -127,13 +100,11 @@ def process_one(clip: Path, args) -> dict:
     for ss in res.stanza_scores:
         flag = "OK" if ss.accepted else "ERR"
         print(f"  [{flag}] stanza {ss.index}: {ss.word_errors} errors  | {ss.transcript!r}")
-    import pprint
-    pprint.pprint(res.to_dict(), indent=2)
-    if json_out: json_out.write_text(json.dumps(res.to_dict(), indent=2))
+    # import pprint
+    # pprint.pprint(res.to_dict(), indent=2)
 
-    if not args.keep_wav:
-        try: wav.unlink()
-        except OSError: pass
+    try: wav.unlink()
+    except OSError: pass
 
     return {"clip": clip.name, "status": verdict, "reason": res.reason,
             "stanzas": res.num_stanzas, "errs": res.word_errors,
