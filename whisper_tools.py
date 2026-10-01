@@ -43,6 +43,8 @@ MIN_SPEECH_MS = 250          # discard nonsilent segments shorter than this
 SILENCE_THRESH_OFFSET = 15   # dBFS offset below overall level for silence detect
 SEEK_STEP_MS = 10            # resolution of silence detection
 STANZA_FILE = "stanzas.txt"
+STANZA_TMP_DIR = "chant_stanzas"
+STANZA_TMP_CLEANUP = True
 
 _MODEL = None
 
@@ -174,7 +176,7 @@ def count_word_errors(reference, hypothesis):
         "hyp_count": len(hypothesis),
     }
 
-def score_stanzas(chunks, *, max_word_errors=MAX_WORD_ERRORS, tmp_dir="chant_stanzas", cleanup_tmp=True):
+def score_stanzas(chunks, *, max_word_errors=MAX_WORD_ERRORS, tmp_dir=STANZA_TMP_DIR, cleanup_tmp=STANZA_TMP_CLEANUP):
     """Transcribe each stanza chunk independently and accumulate global WER.
     Args:
         chunks: Output from split_into_stanzas().
