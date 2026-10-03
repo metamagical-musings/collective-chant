@@ -224,7 +224,7 @@ def score_stanzas(chunks, *, max_word_errors=MAX_WORD_ERRORS, tmp_dir=STANZA_TMP
                 compression_ratio_threshold=2.0,
                 log_prob_threshold=-1.0,
                 no_speech_threshold=0.6,
-                vad_filter=False
+                vad_filter=True
             )
             words_list, parts = [], []
             for seg in segments:
