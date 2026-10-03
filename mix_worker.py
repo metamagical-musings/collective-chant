@@ -27,11 +27,17 @@ class Const:
     stanza_tmp_dir = "tmp/chant_stanzas"
     stanza_tmp_cleanup = True
     max_word_errors = 3
-    model_name = "base.en"
     device = "cpu"
     compute_type = "int8"
     beam_size = 5
     temperature = 0.0
+    word_timestamps = False
+    condition_on_previous_text = False
+    compression_ratio_threshold = 2.0
+    log_prob_threshold = -1.0
+    no_speech_threshold = 0.6
+    vad_filter = True
+    model_name = "base.en"
     model = None
 
 class Timer:
@@ -114,6 +120,21 @@ def prepare_audio(path, timeout=60.0):
         return None
     return audio.set_frame_rate(48000).set_channels(1).set_sample_width(2)
 
+def check_duration(audio, ref_duration_sec):
+    dur_sec = len(audio) / 1000.0
+    delta_sec = abs(dur_sec - ref_duration_sec);
+    if (delta_sec > Const.tolerance_sec):
+        print(f"  REJECT: {delta_sec:.1f}s delta duration exceeds allowed tolerance {Const.tolerance_sec}s")
+        return False
+    return True
+
+def normalize_to_target(audio):
+    peak = audio.max_dBFS
+    if peak > -180: audio = audio.apply_gain(-peak - Const.headroom_db) # not digital silence
+    current = audio.dBFS
+    if current > -180: audio = audio.apply_gain(Const.target_db - current)
+    return audio
+
 def split_into_stanzas(audio):
     try:
         silence_thresh = audio.dBFS - Const.silence_thresh_offset
@@ -143,12 +164,6 @@ def split_into_stanzas(audio):
 def get_model():
     if Const.model is None: Const.model = WhisperModel(Const.model_name, device=Const.device, compute_type=Const.compute_type)
     return Const.model
-
-def audio_to_temp_wav(blob, tmp_dir, idx):
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    path = tmp_dir / f"stanza_{idx}.wav"
-    blob.export(str(path), format="wav")
-    return path
 
 def normalize_words(text: str) -> list[str]:
     """Lowercase, strip punctuation, split into bare word tokens."""
@@ -189,72 +204,59 @@ def score_stanzas(chunks):
     stanza_texts = [normalize_words(line) for line in chant_texts]
     num_ref_stanzas = len(stanza_texts)
     if len(chunks) != num_ref_stanzas:
-        return ScoreResult(accepted=False, reason=f"detected {len(chunks)} stanzas, expected {num_ref_stanzas}", num_stanzas=len(chunks), num_ref_stanzas=num_ref_stanzas, word_errors=0, error_rate=0.0)
+        print(f"  REJECT: detected {len(chunks)} stanzas, expected {num_ref_stanzas}")
+        return None
     model = get_model()
-    stanza_scores = []
+    tmp_dir = Path(Const.stanza_tmp_dir)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
     total_errors = 0
-    total_ref_words = 0
-    denom = max(total_ref_words, 1)
-    all_transcripts = []
     stanza_windows = []
     saved_exc = None
-    tmp_path = Path(Const.stanza_tmp_dir)
     try:
         for chunk in chunks:
-            ref_words = stanza_texts[chunk.index]
-            total_ref_words += len(ref_words)
-            wav_file = audio_to_temp_wav(chunk.audio, tmp_path, chunk.index)
+            wav_file = str(tmp_dir / f"stanza_{chunk.index}.wav")
+            chunk.audio.export(wav_file, format="wav")
             segments, info = model.transcribe(
-                str(wav_file),
+                wav_file,
                 language="en",
+                initial_prompt=chant_texts[chunk.index],
                 beam_size=Const.beam_size,
                 temperature=Const.temperature,
-                word_timestamps=False,
-                condition_on_previous_text=False,
-                initial_prompt=chant_texts[chunk.index],
-                compression_ratio_threshold=2.0,
-                log_prob_threshold=-1.0,
-                no_speech_threshold=0.6,
-                vad_filter=True
+                word_timestamps=Const.word_timestamps,
+                condition_on_previous_text=Const.condition_on_previous_text,
+                compression_ratio_threshold=Const.compression_ratio_threshold,
+                log_prob_threshold=Const.log_prob_threshold,
+                no_speech_threshold=Const.no_speech_threshold,
+                vad_filter=Const.vad_filter
             )
-            words_list, parts = [], []
-            for seg in segments:
-                parts.append(seg.text.strip())
-                for w in (seg.words or []): words_list.append({"word": w.word.strip(), "start": float(w.start), "end": float(w.end)})
+            parts = []
+            for seg in segments: parts.append(seg.text.strip())
+            language = (info.language or "").lower()
             transcript = " ".join(parts).strip()
-            lang = (info.language or "").lower()
             hyp_words = normalize_words(transcript)
+            ref_words = stanza_texts[chunk.index]
             err = count_word_errors(ref_words, hyp_words)
-            stanza_err_count = err["word_errors"]
-            total_errors += stanza_err_count
-            all_transcripts.append(transcript)
+            stanza_results = {
+                "index": chunk.index,
+                "transcript": transcript,
+                "language": language,
+            }
+            stanza_results.update(err)
+            results_file = str(tmp_dir / f"stanza_{chunk.index}.json")
+            with open(results_file, "w") as f: json.dump(stanza_results, f, indent=4)
+            total_errors += err["word_errors"]
             stanza_windows.append((chunk.start_ms / 1000.0, chunk.end_ms / 1000.0))
     except Exception as exc:
         saved_exc = exc
     finally:
-        if Const.stanza_tmp_cleanup: shutil.rmtree(tmp_path, ignore_errors=True)
+        if Const.stanza_tmp_cleanup: shutil.rmtree(tmp_dir, ignore_errors=True)
     if saved_exc is not None:
         print(f"  REJECT: Scoring aborted ({saved_exc})")
-        return False
+        return None
     elif total_errors > Const.max_word_errors:
         print(f"  REJECT: {total_errors} total word errors > {Const.max_word_errors}")
-        return False
-    return True
-
-def check_duration(audio, ref_duration_sec):
-    dur_sec = len(audio) / 1000.0
-    delta_sec = abs(dur_sec - ref_duration_sec);
-    if (delta_sec > Const.tolerance_sec):
-        print(f"  REJECT: {delta_sec:.1f}s delta duration exceeds allowed tolerance {Const.tolerance_sec}s")
-        return False
-    return True
-    
-def normalize_to_target(audio):
-    peak = audio.max_dBFS
-    if peak > -180: audio = audio.apply_gain(-peak - Const.headroom_db) # not digital silence
-    current = audio.dBFS
-    if current > -180: audio = audio.apply_gain(Const.target_db - current)
-    return audio
+        return None
+    return stanza_windows
 
 def compress_or_stretch_to_target(audio, ref_duration_ms):
     factor = len(audio) / ref_duration_ms # >1 means audio is too long
@@ -318,9 +320,9 @@ def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
         chunks = split_into_stanzas(seg)
         timer.tick("stanzas_split")
         if chunks is None: continue
-        accepted = score_stanzas(chunks)
+        stanza_windows = score_stanzas(chunks)
         timer.tick("score_stanzas")
-        if not accepted: continue
+        if stanza_windows is None: continue
 
         continue
 
