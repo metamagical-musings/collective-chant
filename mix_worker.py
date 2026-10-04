@@ -12,23 +12,30 @@ class Const:
     mixes_dir = "mixes"
     tmp_dir = "tmp"
     ref_path = "static/ref_audio.webm"
-    tolerance_sec = 1.0
-    headroom_db = 6.0
-    target_db = -14.0
-    bitrate = "48k" # bps
+    stanza_file = "static/stanzas.txt"
+    stanza_tmp_dir = "tmp/chant_stanzas"
+    stanza_tmp_cleanup = True
+    # prepare_audio()
     target_sample_rate = 16000
     target_channels = 1
     loudnorm_filter = "loudnorm=I=-16:TP=-3:LRA=11"
+    # check_duration()
+    tolerance_sec = 1.0
+    # normalize_to_target()
+    headroom_db = 6.0
+    target_db = -14.0
+    bitrate = "48k" # bps
+    # split_into_stanzas()
     gap_threshold_ms = 1000      # minimum gap to qualify as a stanza boundary
     min_speech_ms = 250          # discard nonsilent segments shorter than this
     silence_thresh_offset = 15   # dBFS offset below overall level for silence detect
     seek_step_ms = 10            # resolution of silence detection
-    stanza_file = "static/stanzas.txt"
-    stanza_tmp_dir = "tmp/chant_stanzas"
-    stanza_tmp_cleanup = True
-    max_word_errors = 3
+    # get_model()
     device = "cpu"
     compute_type = "int8"
+    model_name = "base.en"
+    model = None
+    # score_stanzas()
     beam_size = 5
     temperature = 0.0
     word_timestamps = False
@@ -37,8 +44,7 @@ class Const:
     log_prob_threshold = -1.0
     no_speech_threshold = 0.6
     vad_filter = True
-    model_name = "base.en"
-    model = None
+    max_word_errors = 3
 
 class Timer:
     def __init__(self):
@@ -190,7 +196,7 @@ def count_word_errors(reference, hypothesis):
         "hyp_count": len(hypothesis),
     }
 
-def score_stanzas(chunks):
+def score_stanzas(mix_id, chunks):
     with open(Path(Const.stanza_file), 'r', encoding='utf-8') as f:
         chant_texts = []
         current_block = []
@@ -207,7 +213,7 @@ def score_stanzas(chunks):
         print(f"  REJECT: detected {len(chunks)} stanzas, expected {num_ref_stanzas}")
         return None
     model = get_model()
-    tmp_dir = Path(Const.stanza_tmp_dir)
+    tmp_dir = Path(Const.stanza_tmp_dir + f"_{mix_id}.wav")
     tmp_dir.mkdir(parents=True, exist_ok=True)
     total_errors = 0
     stanza_windows = []
@@ -320,7 +326,7 @@ def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
         chunks = split_into_stanzas(seg)
         timer.tick("stanzas_split")
         if chunks is None: continue
-        stanza_windows = score_stanzas(chunks)
+        stanza_windows = score_stanzas(mix_id, chunks)
         timer.tick("score_stanzas")
         if stanza_windows is None: continue
 
