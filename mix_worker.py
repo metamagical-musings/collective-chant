@@ -20,7 +20,7 @@ class Const:
     target_channels = 1
     loudnorm_filter = "loudnorm=I=-16:TP=-3:LRA=11"
     # check_duration()
-    tolerance_sec = 1.0
+    tolerance_ms = 1000
     # normalize_to_target()
     headroom_db = 6.0
     target_db = -14.0
@@ -45,6 +45,12 @@ class Const:
     no_speech_threshold = 0.6
     vad_filter = True
     max_word_errors = 3
+    # align_submission()
+    soft_alignment = False        # True => blend with natural position (less robotic)
+    align_softness = 0.7          # fraction of the way to snap to grid (1.0 == rigid)
+    max_shift_ms = 400            # reject if any stanza needs > this shift (suspect split)
+    stretch_to_match = False      # True => time-compress each stanza to ref duration
+    tempo_limit = 0.08            # max |atempo-1| before we skip stretching (artifact guard)
 
 class Timer:
     def __init__(self):
@@ -91,6 +97,17 @@ class StanzaChunk:
     def duration_ms(self):
         return self.end_ms - self.start_ms
 
+class AlignedStanza:
+    def __init__(self, index, delta_ms, stretched, start_ms):
+        self.index = index
+        self.delta_ms = delta_ms
+        self.stretched = stretched
+        self.start_ms = start_ms
+
+    def to_dict(self) -> dict:
+        d = {k: v for k, v in self.__dict__.items()}
+        return d
+
 def parse_filename(fname):
     """Return (md5, token, ip) or None if the name doesn't match."""
     m = re.compile(r"^([^.]+)\.([^.]+)\.(.+)\.webm$").match(fname)
@@ -126,11 +143,11 @@ def prepare_audio(path, timeout=60.0):
         return None
     return audio.set_frame_rate(48000).set_channels(1).set_sample_width(2)
 
-def check_duration(audio, ref_duration_sec):
-    dur_sec = len(audio) / 1000.0
-    delta_sec = abs(dur_sec - ref_duration_sec);
-    if (delta_sec > Const.tolerance_sec):
-        print(f"  REJECT: {delta_sec:.1f}s delta duration exceeds allowed tolerance {Const.tolerance_sec}s")
+def check_duration(audio, ref_duration_ms):
+    dur_ms = len(audio)
+    delta_ms = abs(dur_ms - ref_duration_ms);
+    if (delta_ms > Const.tolerance_ms):
+        print(f"  REJECT: {delta_ms}ms delta duration exceeds allowed tolerance {Const.tolerance_ms}s")
         return False
     return True
 
@@ -211,12 +228,11 @@ def score_stanzas(mix_id, chunks):
     num_ref_stanzas = len(stanza_texts)
     if len(chunks) != num_ref_stanzas:
         print(f"  REJECT: detected {len(chunks)} stanzas, expected {num_ref_stanzas}")
-        return None
+        return False
     model = get_model()
     tmp_dir = Path(Const.stanza_tmp_dir + f"_{mix_id}.wav")
     tmp_dir.mkdir(parents=True, exist_ok=True)
     total_errors = 0
-    stanza_windows = []
     saved_exc = None
     try:
         for chunk in chunks:
@@ -251,22 +267,59 @@ def score_stanzas(mix_id, chunks):
             results_file = str(tmp_dir / f"stanza_{chunk.index}.json")
             with open(results_file, "w") as f: json.dump(stanza_results, f, indent=4)
             total_errors += err["word_errors"]
-            stanza_windows.append((chunk.start_ms / 1000.0, chunk.end_ms / 1000.0))
     except Exception as exc:
         saved_exc = exc
     finally:
         if Const.stanza_tmp_cleanup: shutil.rmtree(tmp_dir, ignore_errors=True)
     if saved_exc is not None:
         print(f"  REJECT: Scoring aborted ({saved_exc})")
-        return None
+        return False
     elif total_errors > Const.max_word_errors:
         print(f"  REJECT: {total_errors} total word errors > {Const.max_word_errors}")
-        return None
-    return stanza_windows
+        return False
+    return True
 
-def compress_or_stretch_to_target(audio, ref_duration_ms):
-    factor = len(audio) / ref_duration_ms # >1 means audio is too long
-    return audio._spawn(audio.raw_data, overrides={"frame_rate": int(audio.frame_rate * factor)}).set_frame_rate(audio.frame_rate)
+def _shifted_to_grid(sub_chunk, ref_start_ms, ref_dur_ms):
+    """Return (placement_offset_in_output, shifted_audio).
+    We build the output on the REFERENCE timeline: every submission stanza i starts at ref_start[i].
+    So we cut the stanza from the submission and paste it at ref_start[i] in a silent track as long as the reference.
+    """
+    seg = sub_chunk.audio
+    if Const.stretch_to_match and ref_dur_ms > 0:
+        ratio = ref_dur_ms / max(sub_chunk.duration_ms, 1)
+        if abs(ratio - 1.0) <= Const.tempo_limit:
+            seg = seg.speedChange(frame_rate=seg.frame_rate, aspect=ratio) if hasattr(seg, "speedChange") else _safe_speedup(seg, ratio)
+    return ref_start_ms, seg
+
+def _safe_speedup(seg, ratio):
+    """Best-effort time-stretch without changing pitch.
+    pydub exposes speedup/slowdown (which change pitch) and low_level speed_change.
+    For chant material a small pitch-preserving stretch is usually acceptable;
+    if you need true formant preservation, swap in librosa.effects.time_stretch here.
+    """
+    if ratio >= 1.0: return seg.speedup(change_nut=False, multipliers=ratio)
+    return seg.slowdown(change_nut=False, multipliers=1.0 / ratio)
+
+def align_submission(sub_chunks, ref_chunks, *, soft=Const.soft_alignment, softness=Const.align_softness, max_shift_ms=Const.max_shift_ms):
+    if len(sub_chunks) != len(ref_chunks):
+        print(f"  REJECT: Stanzas mismatch (submission {len(sub_chunks)} vs reference {len(ref_chunks)})")
+        return None
+    total_ms = ref_chunks[-1].end_ms
+    canvas = AudioSegment.silent(duration=total_ms, frame_rate=48000)
+    report = []
+    for sub, ref in zip(sub_chunks, ref_chunks):
+        delta = ref.start_ms - sub.start_ms
+        if abs(delta) > Const.max_shift_ms: raise ValueError(f"stanza {sub.index} needs {delta}ms shift (> {Const.max_shift_ms}); likely a bad stanza split — reject this submission")
+        # Soft alignment: only move partway toward the grid, keeping some of the chanter's natural timing.
+        if soft: effective_delta = int(round(delta * softness))
+        else: effective_delta = delta
+        placement = sub.start_ms + effective_delta   # where it lands on canvas
+        # Clamp so we never write past the end of the canvas.
+        seg = sub.audio
+        if placement + len(seg) > total_ms: seg = seg[: max(total_ms - placement, 0)]
+        canvas = canvas.overlay(seg, position=max(placement, 0))
+        report.append(AlignedStanza(index=sub.index, delta_ms=effective_delta, stretched=(Const.stretch_to_match), start_ms=max(placement, 0)))
+    return canvas, report
 
 def equal_gain_mix(segments):
     width = max(len(s) for s in segments)
@@ -294,15 +347,21 @@ def write_json_atomic(obj, out_path):
     os.replace(part, out_path)
 
 def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
-    def print_stats(name, audio):
-        print(f"  OK {name}  {round(len(audio) / 1000.0, 3)}s  {round(audio.dBFS, 2)}dBFS")
+    def print_stats(path, audio, chunks):
+        print(f"  OK {path.name}  {round(len(audio) / 1000.0, 3)}s  {round(audio.dBFS, 2)}dBFS  {len(chunks)} stanzas")
     print(f"[Worker {mix_id}] Start reference audio processing...")
-    ref_seg = decode_webm(ref_path)
+    ref_seg = prepare_audio(ref_path)
+    timer.tick("prepare_audio")
     if ref_seg is None: raise ValueError("Invalid reference audio")
-    ref_seg = normalize_to_target(ref_seg)
-    print_stats(ref_path.name, ref_seg)
     ref_duration_ms = len(ref_seg)
-    ref_duration_sec = ref_duration_ms / 1000.0
+    ref_seg = normalize_to_target(ref_seg)
+    timer.tick("normalize")
+    ref_chunks = split_into_stanzas(ref_seg)
+    timer.tick("stanzas_split")
+    passed = score_stanzas(mix_id, ref_chunks)
+    timer.tick("score_stanzas")
+    if not passed: raise ValueError("Reference audio stanza score insufficient")
+    print_stats(ref_path, ref_seg, ref_chunks)
     mixed_parts = []
     mixed_parts.append(ref_seg) # append reference multiple times?
     print(f"[Worker {mix_id}] Starting processing of candidate uploads...")
@@ -318,7 +377,7 @@ def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
         seg = prepare_audio(path)
         timer.tick("prepare_audio")
         if seg is None: continue
-        accepted = check_duration(seg, ref_duration_sec)
+        accepted = check_duration(seg, ref_duration_ms)
         timer.tick("check_duration")
         if not accepted: continue
         seg = normalize_to_target(seg)
@@ -326,19 +385,18 @@ def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
         chunks = split_into_stanzas(seg)
         timer.tick("stanzas_split")
         if chunks is None: continue
-        stanza_windows = score_stanzas(mix_id, chunks)
+        passed = score_stanzas(mix_id, chunks)
         timer.tick("score_stanzas")
-        if stanza_windows is None: continue
-
-        continue
-
-        seg = compress_or_stretch_to_target(seg, ref_duration_ms)
-        timer.tick("strech_compress")
+        if not passed: continue
+        res = align_submission(chunks, ref_chunks)
+        timer.tick("alignment")
+        if res is None: continue
+        seg, report = res
+        for rep in report: print(rep.to_dict())
         mixed_parts.append(seg)
         contributors.append({token: ip})
-        print_stats(path.name, seg)
+        print_stats(path, seg, chunks)
     timer.tick("all_candidates")
-    sys.exit()
     print(f"Accepted {len(contributors)} of {len(candidates)}.")
     print(f"Mixing {len(mixed_parts)} voices (equal-gain sum)...")
     mixed = equal_gain_mix(mixed_parts)
@@ -398,4 +456,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-
