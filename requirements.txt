@@ -8,3 +8,6 @@ geoip2
 pydub
 audioop-lts
 faster_whisper
+pyrubberband
+soundfile
+numpy

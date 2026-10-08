@@ -6,6 +6,9 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from faster_whisper import WhisperModel
 
+import numpy as np, pyrubberband as pyrb, soundfile as sf
+from io import BytesIO
+
 class Const:
     uploads_dir = "uploads"
     mixes_dir = "mixes"
@@ -23,7 +26,7 @@ class Const:
     # normalize_to_target()
     headroom_db = 6.0
     target_db = -14.0
-    bitrate = "48k" # bps
+    bitrate = "24k" # bps
     # split_into_stanzas()
     gap_threshold_ms = 1000      # minimum gap to qualify as a stanza boundary
     min_speech_ms = 250          # discard nonsilent segments shorter than this
@@ -250,6 +253,20 @@ def score_stanzas(mix_id, chunks):
         return False
     return True
 
+def match_duration_preserve_pitch(segment, reference):
+    target_ms = len(reference)
+    current_ms = len(segment)
+    if current_ms == 0 or target_ms == 0: return segment
+    rate = current_ms / target_ms          # >1 = slower, <1 = faster
+    samples = np.array(segment.get_array_of_samples())
+    if segment.channels == 2: samples = samples.reshape((-1, 2))
+    samples = samples.astype(np.float32) / (2 ** (8 * segment.sample_width - 1))
+    stretched = pyrb.time_stretch(samples, segment.frame_rate, rate)
+    buf = BytesIO()
+    sf.write(buf, stretched, segment.frame_rate, format="WAV", subtype="PCM_16")
+    buf.seek(0)
+    return AudioSegment.from_file(buf, format="wav")
+
 def align_submission(sub_chunks, ref_chunks):
     if len(sub_chunks) != len(ref_chunks):
         print(f"  REJECT: Stanzas mismatch (submission {len(sub_chunks)} vs reference {len(ref_chunks)})")
@@ -257,24 +274,13 @@ def align_submission(sub_chunks, ref_chunks):
     total_ms = ref_chunks[-1].end_ms
     canvas = AudioSegment.silent(duration=total_ms, frame_rate=Const.target_sample_rate)
     for sub, ref in zip(sub_chunks, ref_chunks):
-        seg = sub.audio
-        current_ms = len(seg)
-        target_ms = len(ref.audio)
-        if current_ms == 0 or target_ms == 0: continue
-        ratio = current_ms / target_ms # stretch (>1) or compress (<1)
-        if abs(1 - ratio) > Const.max_stretch:
-            seg = AudioSegment.silent(duration=target_ms, frame_rate=Const.target_sample_rate)
-        else:
-            new_frame_rate = int(seg.frame_rate * ratio)
-            seg = seg._spawn(seg.raw_data, overrides={"frame_rate": new_frame_rate})
-            seg = seg.set_frame_rate(seg.frame_rate)
+        seg = match_duration_preserve_pitch(sub.audio, ref.audio)
         delta = ref.start_ms - sub.start_ms
         if abs(delta) > Const.max_shift_ms:
             print(f"  REJECT: stanza {sub.index} needs {delta}ms shift (> {Const.max_shift_ms}); likely a bad stanza split")
             return None
         placement = sub.start_ms + delta
-        # Clamp so we never write past the end of the canvas.
-        if placement + len(seg) > total_ms: seg = seg[: max(total_ms - placement, 0)]
+        if placement + len(seg) > total_ms: seg = seg[: max(total_ms - placement, 0)] # Clamp so we never write past the end of the canvas.
         canvas = canvas.overlay(seg, position=max(placement, 0))
     return canvas
 
