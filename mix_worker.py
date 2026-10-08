@@ -21,8 +21,8 @@ class Const:
     target_sample_rate = 16000
     target_channels = 1
     loudnorm_filter = "loudnorm=I=-16:TP=-3:LRA=11"
-    # check_duration()
-    tolerance_ms = 1000
+    # compute_ratio()
+    ratio_tolerance = 0.10
     # normalize_to_target()
     headroom_db = 6.0
     target_db = -14.0
@@ -47,9 +47,6 @@ class Const:
     no_speech_threshold = 0.6
     vad_filter = True
     max_word_errors = 7
-    # align_submission()
-    max_shift_ms = 3000
-    max_stretch = 0.08
 
 class Timer:
     def __init__(self):
@@ -122,13 +119,16 @@ def prepare_audio(path, timeout=60.0):
         return None
     return audio.set_frame_rate(Const.target_sample_rate).set_channels(1).set_sample_width(2)
 
-def check_duration(audio, ref_duration_ms):
-    dur_ms = len(audio)
-    delta_ms = abs(dur_ms - ref_duration_ms);
-    if (delta_ms > Const.tolerance_ms):
-        print(f"  REJECT: {delta_ms}ms delta duration exceeds allowed tolerance {Const.tolerance_ms}s")
+def create_silence(duration_ms):
+    return AudioSegment.silent(duration=duration_ms, frame_rate=Const.target_sample_rate)
+
+def compute_ratio(duration_ms, ref_duration_ms):
+    if duration_ms == 0 or ref_duration_ms == 0: return False
+    ratio = duration_ms / ref_duration_ms
+    if abs(1 - ratio) > Const.ratio_tolerance:
+        print(f"  REJECT: {ratio:.2f} duration ratio exceeds allowed tolerance {Const.ratio_tolerance}")
         return False
-    return True
+    return ratio
 
 def normalize_to_target(audio):
     if audio.max_dBFS <= -180: return audio # digital silence
@@ -254,41 +254,36 @@ def score_stanzas(mix_id, chunks):
     return True
 
 def match_duration_preserve_pitch(segment, reference):
-    target_ms = len(reference)
-    current_ms = len(segment)
-    if current_ms == 0 or target_ms == 0: return segment
-    rate = current_ms / target_ms          # >1 = slower, <1 = faster
+    ref_ms = len(reference)
+    seg_ms = len(segment)
+    ratio = compute_ratio(seg_ms, ref_ms)
+    if ratio is False: return create_silence(ref_ms)
     samples = np.array(segment.get_array_of_samples())
     if segment.channels == 2: samples = samples.reshape((-1, 2))
     samples = samples.astype(np.float32) / (2 ** (8 * segment.sample_width - 1))
-    stretched = pyrb.time_stretch(samples, segment.frame_rate, rate)
+    stretched = pyrb.time_stretch(samples, segment.frame_rate, ratio)
     buf = BytesIO()
     sf.write(buf, stretched, segment.frame_rate, format="WAV", subtype="PCM_16")
     buf.seek(0)
     return AudioSegment.from_file(buf, format="wav")
 
-def align_submission(sub_chunks, ref_chunks):
+def align_stanzas(sub_chunks, ref_chunks):
     if len(sub_chunks) != len(ref_chunks):
         print(f"  REJECT: Stanzas mismatch (submission {len(sub_chunks)} vs reference {len(ref_chunks)})")
         return None
     total_ms = ref_chunks[-1].end_ms
-    canvas = AudioSegment.silent(duration=total_ms, frame_rate=Const.target_sample_rate)
+    canvas = create_silence(total_ms)
     for sub, ref in zip(sub_chunks, ref_chunks):
         seg = match_duration_preserve_pitch(sub.audio, ref.audio)
-        delta = ref.start_ms - sub.start_ms
-        if abs(delta) > Const.max_shift_ms:
-            print(f"  REJECT: stanza {sub.index} needs {delta}ms shift (> {Const.max_shift_ms}); likely a bad stanza split")
-            return None
-        placement = sub.start_ms + delta
-        if placement + len(seg) > total_ms: seg = seg[: max(total_ms - placement, 0)] # Clamp so we never write past the end of the canvas.
-        canvas = canvas.overlay(seg, position=max(placement, 0))
+        if ref.start_ms + len(seg) > total_ms: seg = seg[: max(total_ms - ref.start_ms, 0)] # Clamp to avoid overflow.
+        canvas = canvas.overlay(seg, position=max(ref.start_ms, 0))
     return canvas
 
 def equal_gain_mix(segments):
     segments = [t.set_frame_rate(Const.target_sample_rate).set_channels(2).set_sample_width(2) for t in segments]
     attenuation_db = 20.0 * math.log10(len(segments)) # safe starting value for coherent case; 16–18 for naturally variable voices
     attenuated = [t - attenuation_db for t in segments]
-    canvas = AudioSegment.silent(duration=max(len(t) for t in attenuated), frame_rate=Const.target_sample_rate)
+    canvas = create_silence(max(len(t) for t in attenuated))
     for t in attenuated: canvas = canvas.overlay(t)
     return canvas
 
@@ -334,19 +329,19 @@ def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
         seg = prepare_audio(path)
         timer.tick("prepare_audio")
         if seg is None: continue
-        accepted = check_duration(seg, ref_duration_ms)
-        timer.tick("check_duration")
+        accepted = compute_ratio(len(seg), ref_duration_ms)
+        timer.tick("compute_ratio")
         if not accepted: continue
         seg = normalize_to_target(seg)
         timer.tick("normalize")
         chunks = split_into_stanzas(seg)
-        timer.tick("stanzas_split")
+        timer.tick("split_stanzas")
         if chunks is None: continue
         passed = score_stanzas(mix_id, chunks)
         timer.tick("score_stanzas")
         if not passed: continue
-        seg = align_submission(chunks, ref_chunks)
-        timer.tick("alignment")
+        seg = align_stanzas(chunks, ref_chunks)
+        timer.tick("align_stanzas")
         if seg is None: continue
         mixed_parts.append(seg)
         contributors.append({token: ip})
