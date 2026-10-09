@@ -1,15 +1,29 @@
 #!/usr/bin/env python3
 
+"""
+mix_worker.py - standalone program to mix audio files found in uploads/*.webm and save the result to the mixes directory.
+                The only command line argument is the mix number.
+
+To improve effectiveness, audio blobs are split into stanzas (that should be less than 30 seconds in duration, to avoid ASR degredation)
+according to >1 second gaps of silence between them. After splitting, stanzas are shifted and compressed/stretched to match a
+reference audio in static/ref_path.
+
+Automatic Speech Recognition is done by faster_whisper, which downloads and caches a model when first run. Recognized text
+must match the reference text in static/stanza_file within max_word_errors. Stanzas in stanza_file are separated by blank lines.
+
+Currently works only on Linux. Must install: ffmpeg and pyrubberband-cli
+"""
 import json, os, re, shutil, sys, time, subprocess, math
+import numpy as np, pyrubberband as pyrb, soundfile as sf
+from datetime import datetime
 from pydub import AudioSegment, silence
 from difflib import SequenceMatcher
 from pathlib import Path
 from faster_whisper import WhisperModel
-
-import numpy as np, pyrubberband as pyrb, soundfile as sf
 from io import BytesIO
 
 class Const:
+    error_level = 3 # 0==FATAL, 1==COURSE, 2==FINE, 3==TIMING
     uploads_dir = "uploads"
     mixes_dir = "mixes"
     tmp_dir = "tmp"
@@ -18,6 +32,7 @@ class Const:
     stanza_tmp_dir = "tmp/chant_stanzas"
     stanza_tmp_cleanup = False
     # prepare_audio()
+    ffmpeg_timeout = 60.0
     target_sample_rate = 16000
     target_channels = 1
     loudnorm_filter = "loudnorm=I=-16:TP=-3:LRA=11"
@@ -60,28 +75,12 @@ class Timer:
         self.stages[label] = self.stages.get(label, 0.0) + elapsed
         self.last = now
         total = now - self.t0
-        print(f"  [t={total:6.2f}s | step {elapsed:5.2f}s] {label}")
+        log(f"  [t={total:6.2f}s | step {elapsed:5.2f}s] {label}", 3)
 
     def report(self):
-        print("Timing summary:")
-        for label, secs in self.stages.items(): print(f"    {secs:7.2f}s  {label}")
-        print(f"    {time.perf_counter() - self.t0:7.2f}s  TOTAL")
-
-class WorkerLock:
-    def __init__(self, mixes_dir):
-        self.path = mixes_dir / ".mix_worker.lock"
-        self.fh = None
-    def acquire(self):
-        try:
-            self.fh = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(self.fh, str(os.getpid()).encode())
-            return True
-        except FileExistsError: return False
-    def release(self) -> None:
-        if self.fh is not None:
-            os.close(self.fh)
-            try: os.unlink(self.path)
-            except FileNotFoundError: pass
+        log("Timing summary:", 3)
+        for label, secs in self.stages.items(): log(f"    {secs:7.2f}s  {label}", 3)
+        log(f"    {time.perf_counter() - self.t0:7.2f}s  TOTAL", 3)
 
 class StanzaChunk:
     def __init__(self, index, start_ms, end_ms, audio):
@@ -97,17 +96,17 @@ def parse_filename(fname):
     """Return (md5, token, ip) or None if the name doesn't match."""
     m = re.compile(r"^([^.]+)\.([^.]+)\.(.+)\.webm$").match(fname)
     if not m:
-        print(f"  SKIP (bad filename pattern): {fname}")
+        log(f"  SKIP (bad filename pattern): {fname}", 1)
         return None
     return m.groups()
 
-def prepare_audio(path, timeout=60.0):
+def prepare_audio(path):
     try:
         dst_path = Path(Const.tmp_dir) / Path(path.name + "_asr.wav")
         cmd = ["ffmpeg", "-y", "-i", str(path), "-af", Const.loudnorm_filter, "-ar", str(Const.target_sample_rate), "-ac", str(Const.target_channels), str(dst_path)]
-        try: proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=timeout)
+        try: proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=Const.ffmpeg_timeout)
         except FileNotFoundError as exc: raise RuntimeError("ffmpeg executable not found on PATH") from exc
-        except subprocess.TimeoutExpired as exc: raise RuntimeError(f"ffmpeg timed out after {timeout}s on {path}") from exc
+        except subprocess.TimeoutExpired as exc: raise RuntimeError(f"ffmpeg timed out after {Const.ffmpeg_timeout}s") from exc
         if proc.returncode != 0 or not dst_path.exists():
             tail = proc.stderr.decode(errors="replace")[-400:] if proc.stderr else ""
             raise RuntimeError(f"ffmpeg failed (rc={proc.returncode}) on {path}: {tail}")
@@ -115,7 +114,7 @@ def prepare_audio(path, timeout=60.0):
         try: dst_path.unlink()
         except OSError as exc: raise RuntimeError("Unable to delete temporary wav file {dst_path}") from exc
     except RuntimeError as exc:
-        print(f"  REJECT: {path.name}: unlink failed ({exc})")
+        log(f"  REJECT: {path.name}: {exc}", 1)
         return None
     return audio.set_frame_rate(Const.target_sample_rate).set_channels(1).set_sample_width(2)
 
@@ -126,7 +125,7 @@ def compute_ratio(duration_ms, ref_duration_ms):
     if duration_ms == 0 or ref_duration_ms == 0: return False
     ratio = duration_ms / ref_duration_ms
     if abs(1 - ratio) > Const.ratio_tolerance:
-        print(f"  REJECT: {ratio:.2f} duration ratio exceeds allowed tolerance {Const.ratio_tolerance}")
+        log(f"  SKIP: {ratio:.2f} duration ratio exceeds allowed tolerance {Const.ratio_tolerance}", 1)
         return False
     return ratio
 
@@ -140,7 +139,7 @@ def split_into_stanzas(audio):
     # Filter out short noise artifacts within silence regions.
     real_speech = [(s, e) for s, e in nonsilent if (e - s) >= Const.min_speech_ms]
     if not real_speech:
-        print(f"  REJECT: {path.name}: stanzas split failed (No speech detected in {wav_path})")
+        log(f"  REJECT: stanzas split failed (No speech detected)", 1)
         return None
     # Group speech regions into stanzas: a new stanza starts when the gap before it exceeds Const.gap_threshold_ms.
     stanzas = [[real_speech[0]]]
@@ -201,7 +200,7 @@ def score_stanzas(mix_id, chunks):
     stanza_texts = [normalize_words(line) for line in chant_texts]
     num_ref_stanzas = len(stanza_texts)
     if len(chunks) != num_ref_stanzas:
-        print(f"  REJECT: detected {len(chunks)} stanzas, expected {num_ref_stanzas}")
+        log(f"  REJECT: detected {len(chunks)} stanzas, expected {num_ref_stanzas}", 1)
         return False
     model = get_model()
     tmp_dir = Path(Const.stanza_tmp_dir + f"_{mix_id}")
@@ -246,30 +245,30 @@ def score_stanzas(mix_id, chunks):
     finally:
         if Const.stanza_tmp_cleanup: shutil.rmtree(tmp_dir, ignore_errors=True)
     if saved_exc is not None:
-        print(f"  REJECT: Scoring aborted ({saved_exc})")
+        log(f"  REJECT: Scoring aborted ({saved_exc})", 1)
         return False
     elif total_errors > Const.max_word_errors:
-        print(f"  REJECT: {total_errors} total word errors > {Const.max_word_errors}")
+        log(f"  REJECT: {total_errors} total word errors > {Const.max_word_errors}", 1)
         return False
     return True
 
-def match_duration_preserve_pitch(segment, reference):
+def match_duration_preserve_pitch(audio, reference):
     ref_ms = len(reference)
-    seg_ms = len(segment)
+    seg_ms = len(audio)
     ratio = compute_ratio(seg_ms, ref_ms)
     if ratio is False: return create_silence(ref_ms)
-    samples = np.array(segment.get_array_of_samples())
-    if segment.channels == 2: samples = samples.reshape((-1, 2))
-    samples = samples.astype(np.float32) / (2 ** (8 * segment.sample_width - 1))
-    stretched = pyrb.time_stretch(samples, segment.frame_rate, ratio)
+    samples = np.array(audio.get_array_of_samples())
+    if audio.channels == 2: samples = samples.reshape((-1, 2))
+    samples = samples.astype(np.float32) / (2 ** (8 * audio.sample_width - 1))
+    stretched = pyrb.time_stretch(samples, audio.frame_rate, ratio)
     buf = BytesIO()
-    sf.write(buf, stretched, segment.frame_rate, format="WAV", subtype="PCM_16")
+    sf.write(buf, stretched, audio.frame_rate, format="WAV", subtype="PCM_16")
     buf.seek(0)
     return AudioSegment.from_file(buf, format="wav")
 
 def align_stanzas(sub_chunks, ref_chunks):
     if len(sub_chunks) != len(ref_chunks):
-        print(f"  REJECT: Stanzas mismatch (submission {len(sub_chunks)} vs reference {len(ref_chunks)})")
+        log(f"  REJECT: Stanzas mismatch (submission {len(sub_chunks)} vs reference {len(ref_chunks)})", 1)
         return None
     total_ms = ref_chunks[-1].end_ms
     canvas = create_silence(total_ms)
@@ -298,30 +297,45 @@ def write_json_atomic(obj, out_path):
     with open(part, "w") as fh: json.dump(obj, fh)
     os.replace(part, out_path)
 
+def delete_submissions(submissions):
+    for path in submissions:
+        try:
+            os.remove(path)
+            log(f"Deleted: {path.name}", 2)
+        except FileNotFoundError: log(f"File not found (may have been deleted): {path.name}", 2)
+        except PermissionError: log(f"Permission denied: {path.name}", 2)
+
 def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
-    def print_stats(path, audio, chunks):
-        print(f"  OK {path.name}  {round(len(audio) / 1000.0, 3)}s  {round(audio.dBFS, 2)}dBFS  {len(chunks)} stanzas")
-    print(f"[Worker {mix_id}] Start reference audio processing...")
+    def print_stats(path, audio):
+        log(f"  OK {path.name}  {round(len(audio) / 1000.0, 3)}s  {round(audio.dBFS, 2)}dBFS", 1)
+    log(f"Start reference audio processing...", 1)
     ref_seg = prepare_audio(ref_path)
     timer.tick("prepare_audio")
-    if ref_seg is None: raise ValueError("Invalid reference audio")
+    if ref_seg is None:
+        log("ERROR: Reference audio preparation failed", 0)
+        return
     ref_duration_ms = len(ref_seg)
     ref_seg = normalize_to_target(ref_seg)
     timer.tick("normalize")
     ref_chunks = split_into_stanzas(ref_seg)
-    timer.tick("stanzas_split")
+    timer.tick("split_stanzas")
+    if ref_chunks is None:
+        log("ERROR: Reference audio is inaudible", 0)
+        return
     passed = score_stanzas(mix_id, ref_chunks)
     timer.tick("score_stanzas")
-    if not passed: raise ValueError("Reference audio stanza score insufficient")
-    print_stats(ref_path, ref_seg, ref_chunks)
+    if not passed:
+        log("ERROR: Reference audio stanza score insufficient", 0)
+        return
+    print_stats(ref_path, ref_seg)
     mixed_parts = []
     mixed_parts.append(ref_seg) # append reference multiple times?
-    print(f"[Worker {mix_id}] Starting processing of candidate uploads...")
-    candidates = sorted(p for p in uploads_dir.iterdir() if p.is_file() and p.name.endswith(".webm"))
-    print(f"Found {len(candidates)} candidate file(s).")
+    log(f"Starting processing of submissions for mix {mix_id}...", 1)
+    submissions = sorted(p for p in uploads_dir.iterdir() if p.is_file() and p.name.endswith(".webm"))
+    log(f"Found {len(submissions)} submitted file(s).", 1)
     contributors = []
-    for path in candidates:
-        print(f"Processing {path.name}...")
+    for path in submissions:
+        log(f"Processing {path.name}...", 1)
         parsed = parse_filename(path.name)
         timer.tick("parse")
         if not parsed: continue
@@ -345,64 +359,52 @@ def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
         if seg is None: continue
         mixed_parts.append(seg)
         contributors.append({token: ip})
-        print_stats(path, seg, chunks)
-    timer.tick("all_candidates")
-    print(f"Accepted {len(contributors)} of {len(candidates)}.")
-    print(f"Mixing {len(mixed_parts)} voices (equal-gain sum)...")
+        print_stats(path, seg)
+    timer.tick("all_submissions")
+    log(f"Accepted {len(contributors)} of {len(submissions)}.", 1)
+    log(f"Mixing {len(mixed_parts)} voices (equal-gain sum)...", 1)
     mixed = equal_gain_mix(mixed_parts)
     timer.tick("mix")
     mixed = normalize_to_target(mixed)
     timer.tick("normalize")
-    print(f"Mix length {len(mixed)/1000:.2f}s, peak {mixed.max_dBFS:.1f} dBFS, loudness {mixed.dBFS:.1f} dBFS")
+    log(f"Mix length {len(mixed)/1000:.2f}s, peak {mixed.max_dBFS:.1f} dBFS, loudness {mixed.dBFS:.1f} dBFS", 1)
     mix_path = mixes_dir / f"{mix_id}.webm"
     encode_webm(mixed, mix_path)
     timer.tick("encode")
     contributors_path = mixes_dir / f"{mix_id}.json"
     write_json_atomic(contributors, contributors_path)
     timer.tick("publish")
-    # for path in candidates:
-        # try:
-            # os.remove(path)
-            # print(f"Deleted: {path.name}")
-        # except FileNotFoundError: print(f"File not found (may have been deleted): {path.name}")
-        # except PermissionError: print(f"Permission denied: {path.name}")
+    #delete_submissions(submissions)
     timer.report()
-    print(f"Process complete. Mix: {mix_path}")
+    log(f"Process complete. Mix: {mix_path}", 1)
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: mix_worker.py <mix_id>")
-        return 1
+        log("Usage: mix_worker.py <mix_id>", 0)
+        return
     mix_id = sys.argv[1]
     uploads_dir = Path(Const.uploads_dir)
     if not uploads_dir.is_dir():
-        print(f"ERROR: uploads dir not found: {uploads_dir}")
-        return 1
+        log(f"ERROR: uploads dir not found: {uploads_dir}", 0)
+        return
     mixes_dir = Path(Const.mixes_dir)
     if not mixes_dir.is_dir():
-        print(f"ERROR: mixes dir not found: {mixes_dir}")
-        return 1
+        log(f"ERROR: mixes dir not found: {mixes_dir}", 0)
+        return
     tmp_dir = Path(Const.tmp_dir)
     if not tmp_dir.is_dir():
-        print(f"ERROR: tmp dir not found: {mixes_dir}")
-        return 1
+        log(f"ERROR: tmp dir not found: {tmp_dir}", 0)
+        return
     ref_path = Path(Const.ref_path)
     if not ref_path.is_file():
-        print(f"ERROR: reference audio not found: {ref_path}")
-        return 1
-    # lock = WorkerLock(mixes_dir)
-    # if not lock.acquire():
-        # print("Another worker holds the lock; exiting.")
-        # return 0
+        log(f"ERROR: reference audio not found: {ref_path}", 0)
+        return
     timer = Timer()
-    try:
-        run(mix_id, uploads_dir, mixes_dir, ref_path, timer)
-        return 0
-    except Exception as exc:
-        print(f"FATAL: {type(exc).__name__}: {exc}")
-        raise
-        return 1
-    # finally: lock.release()
+    run(mix_id, uploads_dir, mixes_dir, ref_path, timer)
+
+def log(message, level):
+    if level > Const.error_level: return
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}")
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
