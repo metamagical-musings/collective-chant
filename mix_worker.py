@@ -109,9 +109,26 @@ class StanzaChunk:
         self.start_ms = start_ms
         self.end_ms = end_ms
         self.audio = audio
-        
-    def duration_ms(self):
-        return self.end_ms - self.start_ms
+
+    def word_edit_distance(self, reference, hypothesis):
+        def normalize_words(text):
+            """Lowercase, strip punctuation, split into bare word tokens."""
+            cleaned = "".join(ch if (ch.isalnum() or ch.isspace()) else " " for ch in text.lower())
+            return cleaned.split()
+        ref = normalize_words(reference)
+        hyp = normalize_words(hypothesis)
+        d = np.zeros((len(ref) + 1, len(hyp) + 1), dtype=int)
+        for i in range(len(ref) + 1): d[i, 0] = i  # deletions
+        for j in range(len(hyp) + 1): d[0, j] = j  # insertions
+        for i in range(1, len(ref) + 1):
+            for j in range(1, len(hyp) + 1):
+                if ref[i-1] == hyp[j-1]: d[i, j] = d[i-1, j-1]
+                else:
+                    sub = d[i-1, j-1] + 1
+                    ins = d[i,   j-1] + 1
+                    dele = d[i-1, j]   + 1
+                    d[i, j] = min(sub, ins, dele)
+        return int(d[-1, -1])
 
     def score_chunk(self, tmp_dir):
         try:
@@ -151,26 +168,20 @@ class StanzaChunk:
             return False
         return True
 
-    def word_edit_distance(self, reference, hypothesis):
-        ref = self.normalize_words(reference)
-        hyp = self.normalize_words(hypothesis)
-        d = np.zeros((len(ref) + 1, len(hyp) + 1), dtype=int)
-        for i in range(len(ref) + 1): d[i, 0] = i  # deletions
-        for j in range(len(hyp) + 1): d[0, j] = j  # insertions
-        for i in range(1, len(ref) + 1):
-            for j in range(1, len(hyp) + 1):
-                if ref[i-1] == hyp[j-1]: d[i, j] = d[i-1, j-1]
-                else:
-                    sub = d[i-1, j-1] + 1
-                    ins = d[i,   j-1] + 1
-                    dele = d[i-1, j]   + 1
-                    d[i, j] = min(sub, ins, dele)
-        return int(d[-1, -1])
-
-    def normalize_words(self, text):
-        """Lowercase, strip punctuation, split into bare word tokens."""
-        cleaned = "".join(ch if (ch.isalnum() or ch.isspace()) else " " for ch in text.lower())
-        return cleaned.split()
+    @staticmethod
+    def score_stanzas(mix_id, chunks):
+        if len(chunks) != Stanzas.num_stanzas:
+            log(f"  REJECT: detected {len(chunks)} stanzas, expected {Stanzas.num_stanzas}", 1)
+            return False
+        tmp_dir = Path(Const.stanza_tmp_dir + f"_{mix_id}")
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        passed = True
+        for chunk in chunks:
+            if not chunk.score_chunk(tmp_dir):
+                passed = False
+                break
+        if Const.stanza_tmp_cleanup: shutil.rmtree(tmp_dir, ignore_errors=True)
+        return passed
 
 def parse_filename(fname):
     """Return (md5, token, ip) or None if the name doesn't match."""
@@ -236,20 +247,6 @@ def split_into_stanzas(audio):
         blob = audio[start_ms:end_ms]
         chunks.append(StanzaChunk(index=idx, start_ms=start_ms, end_ms=end_ms, audio=blob))
     return chunks
-
-def score_stanzas(mix_id, chunks):
-    if len(chunks) != Stanzas.num_stanzas:
-        log(f"  REJECT: detected {len(chunks)} stanzas, expected {Stanzas.num_stanzas}", 1)
-        return False
-    tmp_dir = Path(Const.stanza_tmp_dir + f"_{mix_id}")
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    passed = True
-    for chunk in chunks:
-        if not chunk.score_chunk(tmp_dir):
-            passed = False
-            break
-    if Const.stanza_tmp_cleanup: shutil.rmtree(tmp_dir, ignore_errors=True)
-    return passed
 
 def match_duration_preserve_pitch(audio, reference):
     ref_ms = len(reference)
@@ -321,7 +318,7 @@ def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
     if ref_chunks is None:
         log("ERROR: Reference audio is inaudible", 0)
         return
-    passed = score_stanzas(mix_id, ref_chunks)
+    passed = StanzaChunk.score_stanzas(mix_id, ref_chunks)
     timer.tick("score_stanzas")
     if not passed:
         log("ERROR: Reference audio stanza score insufficient", 0)
@@ -351,7 +348,7 @@ def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
         chunks = split_into_stanzas(seg)
         timer.tick("split_stanzas")
         if chunks is None: continue
-        passed = score_stanzas(mix_id, chunks)
+        passed = StanzaChunk.score_stanzas(mix_id, chunks)
         timer.tick("score_stanzas")
         if not passed: continue
         seg = align_stanzas(chunks, ref_chunks)
