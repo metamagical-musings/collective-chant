@@ -9,7 +9,7 @@ according to >1 second gaps of silence between them. After splitting, stanzas ar
 reference audio in static/ref_path.
 
 Automatic Speech Recognition is done by faster_whisper, which downloads and caches a model when first run. Recognized text
-must match the reference text in static/stanza_file within max_word_errors. Stanzas in stanza_file are separated by blank lines.
+must match the reference text in stanzas_file within max_stanza_errors per stanza. Stanzas in stanzas_file are separated by blank lines.
 
 Currently works only on Linux. Must install: ffmpeg and pyrubberband-cli
 """
@@ -28,7 +28,7 @@ class Const:
     mixes_dir = "mixes"
     tmp_dir = "tmp"
     ref_path = "static/ref_chant.webm"
-    stanza_file = "static/stanzas.txt"
+    stanzas_file = "static/stanzas.txt"
     stanza_tmp_dir = "tmp/chant_stanzas"
     stanza_tmp_cleanup = False
     # prepare_audio()
@@ -47,11 +47,10 @@ class Const:
     min_speech_ms = 250          # discard nonsilent segments shorter than this
     silence_thresh_offset = 15   # dBFS offset below overall level for silence detect
     seek_step_ms = 10            # resolution of silence detection
-    # get_model()
+    # Model.load_model()
     device = "cpu"
     compute_type = "int8"
     model_name = "base.en"
-    model = None
     # score_stanzas()
     beam_size = 5
     temperature = 0.0
@@ -61,7 +60,7 @@ class Const:
     log_prob_threshold = -1.0
     no_speech_threshold = 0.6
     vad_filter = True
-    max_word_errors = 7
+    max_stanza_errors = 1
 
 class Timer:
     def __init__(self):
@@ -82,6 +81,28 @@ class Timer:
         for label, secs in self.stages.items(): log(f"    {secs:7.2f}s  {label}", 3)
         log(f"    {time.perf_counter() - self.t0:7.2f}s  TOTAL", 3)
 
+class Model:
+    model = None
+    @classmethod
+    def load_model(cls):
+        if cls.model is None: cls.model = WhisperModel(Const.model_name, device=Const.device, compute_type=Const.compute_type)
+
+class Stanzas:
+    words = []
+    num_stanzas = 0
+    @classmethod
+    def load_stanzas(cls):
+        with open(Path(Const.stanzas_file), 'r', encoding='utf-8') as f:
+            current_block = []
+            for line in f:
+                line = line.rstrip()
+                if line: current_block.append(line)
+                elif current_block:
+                    cls.words.append(' '.join(current_block))
+                    current_block = []
+            if current_block: cls.words.append(' '.join(current_block))
+        cls.num_stanzas = len(cls.words)
+
 class StanzaChunk:
     def __init__(self, index, start_ms, end_ms, audio):
         self.index = index
@@ -91,6 +112,65 @@ class StanzaChunk:
         
     def duration_ms(self):
         return self.end_ms - self.start_ms
+
+    def score_chunk(self, tmp_dir):
+        try:
+            wav_file = str(tmp_dir / f"stanza_{self.index}.wav")
+            self.audio.export(wav_file, format="wav")
+            segments, info = Model.model.transcribe(
+                wav_file,
+                language="en",
+                beam_size=Const.beam_size,
+                temperature=Const.temperature,
+                initial_prompt=Stanzas.words[self.index],
+                word_timestamps=Const.word_timestamps,
+                condition_on_previous_text=Const.condition_on_previous_text,
+                compression_ratio_threshold=Const.compression_ratio_threshold,
+                log_prob_threshold=Const.log_prob_threshold,
+                no_speech_threshold=Const.no_speech_threshold,
+                vad_filter=Const.vad_filter
+            )
+            parts = []
+            for seg in segments: parts.append(seg.text.strip())
+            language = (info.language or "").lower()
+            transcript = " ".join(parts).strip()
+            wed = self.word_edit_distance(Stanzas.words[self.index], transcript)
+            stanza_results = {
+                "index": self.index,
+                "transcript": transcript,
+                "language": language,
+                "word_edit_distance": wed
+            }
+            results_file = str(tmp_dir / f"stanza_{self.index}.json")
+            with open(results_file, "w") as f: json.dump(stanza_results, f, indent=4)
+        except Exception as exc:
+            log(f"  REJECT: Scoring aborted for chunk {self.index} ({exc})", 1)
+            return False
+        if wed > Const.max_stanza_errors:
+            log(f"  REJECT: {wed} stanza word errors > {Const.max_stanza_errors}", 1)
+            return False
+        return True
+
+    def word_edit_distance(self, reference, hypothesis):
+        ref = self.normalize_words(reference)
+        hyp = self.normalize_words(hypothesis)
+        d = np.zeros((len(ref) + 1, len(hyp) + 1), dtype=int)
+        for i in range(len(ref) + 1): d[i, 0] = i  # deletions
+        for j in range(len(hyp) + 1): d[0, j] = j  # insertions
+        for i in range(1, len(ref) + 1):
+            for j in range(1, len(hyp) + 1):
+                if ref[i-1] == hyp[j-1]: d[i, j] = d[i-1, j-1]
+                else:
+                    sub = d[i-1, j-1] + 1
+                    ins = d[i,   j-1] + 1
+                    dele = d[i-1, j]   + 1
+                    d[i, j] = min(sub, ins, dele)
+        return int(d[-1, -1])
+
+    def normalize_words(self, text):
+        """Lowercase, strip punctuation, split into bare word tokens."""
+        cleaned = "".join(ch if (ch.isalnum() or ch.isspace()) else " " for ch in text.lower())
+        return cleaned.split()
 
 def parse_filename(fname):
     """Return (md5, token, ip) or None if the name doesn't match."""
@@ -157,100 +237,19 @@ def split_into_stanzas(audio):
         chunks.append(StanzaChunk(index=idx, start_ms=start_ms, end_ms=end_ms, audio=blob))
     return chunks
 
-def get_model():
-    if Const.model is None: Const.model = WhisperModel(Const.model_name, device=Const.device, compute_type=Const.compute_type)
-    return Const.model
-
-def normalize_words(text: str) -> list[str]:
-    """Lowercase, strip punctuation, split into bare word tokens."""
-    cleaned = "".join(ch if (ch.isalnum() or ch.isspace()) else " " for ch in text.lower())
-    return cleaned.split()
-
-def count_word_errors(reference, hypothesis):
-    matcher = SequenceMatcher(a=reference, b=hypothesis, autojunk=False)
-    replace, delete, insert = 0, 0, 0
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        if tag == "equal": continue
-        elif tag == "replace": replace += max(i2 - i1, j2 - j1) # Substitution(s)
-        elif tag == "delete": delete += i2 - i1 # Words present in reference but missing from hypothesis
-        elif tag == "insert": insert += j2 - j1 # Extra words that appear only in the hypothesis
-    total = replace + delete + insert
-    denom = max(len(reference), 1)
-    return {
-        "word_errors": total,
-        "substitutions": replace,
-        "missing": delete,
-        "extra": insert,
-        "error_rate": total / denom,
-        "ref_count": len(reference),
-        "hyp_count": len(hypothesis),
-    }
-
 def score_stanzas(mix_id, chunks):
-    with open(Path(Const.stanza_file), 'r', encoding='utf-8') as f:
-        chant_texts = []
-        current_block = []
-        for line in f:
-            line = line.rstrip()
-            if line: current_block.append(line)
-            elif current_block:
-                chant_texts.append(' '.join(current_block))
-                current_block = []
-        if current_block: chant_texts.append(' '.join(current_block))
-    stanza_texts = [normalize_words(line) for line in chant_texts]
-    num_ref_stanzas = len(stanza_texts)
-    if len(chunks) != num_ref_stanzas:
-        log(f"  REJECT: detected {len(chunks)} stanzas, expected {num_ref_stanzas}", 1)
+    if len(chunks) != Stanzas.num_stanzas:
+        log(f"  REJECT: detected {len(chunks)} stanzas, expected {Stanzas.num_stanzas}", 1)
         return False
-    model = get_model()
     tmp_dir = Path(Const.stanza_tmp_dir + f"_{mix_id}")
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    total_errors = 0
-    saved_exc = None
-    try:
-        for chunk in chunks:
-            wav_file = str(tmp_dir / f"stanza_{chunk.index}.wav")
-            chunk.audio.export(wav_file, format="wav")
-            segments, info = model.transcribe(
-                wav_file,
-                language="en",
-                initial_prompt=chant_texts[chunk.index],
-                beam_size=Const.beam_size,
-                temperature=Const.temperature,
-                word_timestamps=Const.word_timestamps,
-                condition_on_previous_text=Const.condition_on_previous_text,
-                compression_ratio_threshold=Const.compression_ratio_threshold,
-                log_prob_threshold=Const.log_prob_threshold,
-                no_speech_threshold=Const.no_speech_threshold,
-                vad_filter=Const.vad_filter
-            )
-            parts = []
-            for seg in segments: parts.append(seg.text.strip())
-            language = (info.language or "").lower()
-            transcript = " ".join(parts).strip()
-            hyp_words = normalize_words(transcript)
-            ref_words = stanza_texts[chunk.index]
-            err = count_word_errors(ref_words, hyp_words)
-            stanza_results = {
-                "index": chunk.index,
-                "transcript": transcript,
-                "language": language,
-            }
-            stanza_results.update(err)
-            results_file = str(tmp_dir / f"stanza_{chunk.index}.json")
-            with open(results_file, "w") as f: json.dump(stanza_results, f, indent=4)
-            total_errors += err["word_errors"]
-    except Exception as exc:
-        saved_exc = exc
-    finally:
-        if Const.stanza_tmp_cleanup: shutil.rmtree(tmp_dir, ignore_errors=True)
-    if saved_exc is not None:
-        log(f"  REJECT: Scoring aborted ({saved_exc})", 1)
-        return False
-    elif total_errors > Const.max_word_errors:
-        log(f"  REJECT: {total_errors} total word errors > {Const.max_word_errors}", 1)
-        return False
-    return True
+    passed = True
+    for chunk in chunks:
+        if not chunk.score_chunk(tmp_dir):
+            passed = False
+            break
+    if Const.stanza_tmp_cleanup: shutil.rmtree(tmp_dir, ignore_errors=True)
+    return passed
 
 def match_duration_preserve_pitch(audio, reference):
     ref_ms = len(reference)
@@ -266,14 +265,14 @@ def match_duration_preserve_pitch(audio, reference):
     buf.seek(0)
     return AudioSegment.from_file(buf, format="wav")
 
-def align_stanzas(sub_chunks, ref_chunks):
-    if len(sub_chunks) != len(ref_chunks):
-        log(f"  REJECT: Stanzas mismatch (submission {len(sub_chunks)} vs reference {len(ref_chunks)})", 1)
+def align_stanzas(up_chunks, ref_chunks):
+    if len(up_chunks) != len(ref_chunks):
+        log(f"  REJECT: Stanzas mismatch (upload {len(up_chunks)} vs reference {len(ref_chunks)})", 1)
         return None
     total_ms = ref_chunks[-1].end_ms
     canvas = create_silence(total_ms)
-    for sub, ref in zip(sub_chunks, ref_chunks):
-        seg = match_duration_preserve_pitch(sub.audio, ref.audio)
+    for upload, ref in zip(up_chunks, ref_chunks):
+        seg = match_duration_preserve_pitch(upload.audio, ref.audio)
         if ref.start_ms + len(seg) > total_ms: seg = seg[: max(total_ms - ref.start_ms, 0)] # Clamp to avoid overflow.
         canvas = canvas.overlay(seg, position=max(ref.start_ms, 0))
     return canvas
@@ -297,8 +296,8 @@ def write_json_atomic(obj, out_path):
     with open(part, "w") as fh: json.dump(obj, fh)
     os.replace(part, out_path)
 
-def delete_submissions(submissions):
-    for path in submissions:
+def delete_uploads(uploads):
+    for path in uploads:
         try:
             os.remove(path)
             log(f"Deleted: {path.name}", 2)
@@ -330,16 +329,17 @@ def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
     print_stats(ref_path, ref_seg)
     mixed_parts = []
     mixed_parts.append(ref_seg) # append reference multiple times?
-    log(f"Starting processing of submissions for mix {mix_id}...", 1)
-    submissions = sorted(p for p in uploads_dir.iterdir() if p.is_file() and p.name.endswith(".webm"))
-    log(f"Found {len(submissions)} submitted file(s).", 1)
+    log(f"Starting processing of uploads for mix {mix_id}...", 1)
+    uploads = sorted(p for p in uploads_dir.iterdir() if p.is_file() and p.name.endswith(".webm"))
+    log(f"Found {len(uploads)} submitted file(s).", 1)
     contributors = []
-    for path in submissions:
+    for path in uploads:
         log(f"Processing {path.name}...", 1)
-        parsed = parse_filename(path.name)
-        timer.tick("parse")
-        if not parsed: continue
-        md5, token, ip = parsed
+        # parsed = parse_filename(path.name)
+        # timer.tick("parse")
+        # if not parsed: continue
+        # md5, token, ip = parsed
+        token, ip = "token", "ip"
         seg = prepare_audio(path)
         timer.tick("prepare_audio")
         if seg is None: continue
@@ -360,8 +360,8 @@ def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
         mixed_parts.append(seg)
         contributors.append({token: ip})
         print_stats(path, seg)
-    timer.tick("all_submissions")
-    log(f"Accepted {len(contributors)} of {len(submissions)}.", 1)
+    timer.tick("all_uploads")
+    log(f"Accepted {len(contributors)} of {len(uploads)}.", 1)
     log(f"Mixing {len(mixed_parts)} voices (equal-gain sum)...", 1)
     mixed = equal_gain_mix(mixed_parts)
     timer.tick("mix")
@@ -374,7 +374,7 @@ def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
     contributors_path = mixes_dir / f"{mix_id}.json"
     write_json_atomic(contributors, contributors_path)
     timer.tick("publish")
-    #delete_submissions(submissions)
+    #delete_uploads(uploads)
     timer.report()
     log(f"Process complete. Mix: {mix_path}", 1)
 
@@ -399,6 +399,12 @@ def main():
     if not ref_path.is_file():
         log(f"ERROR: reference audio not found: {ref_path}", 0)
         return
+    stanzas_file = Path(Const.stanzas_file)
+    if not stanzas_file.is_file():
+        log(f"ERROR: reference audio not found: {stanzas_file}", 0)
+        return
+    Stanzas.load_stanzas()
+    Model.load_model()
     timer = Timer()
     run(mix_id, uploads_dir, mixes_dir, ref_path, timer)
 
