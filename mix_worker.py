@@ -381,9 +381,11 @@ def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
     timer.report()
 
 def main():
+    Util.log("Collective Chant program", 1)
+    timer = Timer()
     ReferenceText.load_stanzas(*FS.check_dirs_files(Const.stanzas_path))
     Whisper.load_model(Const.model_name)
-    timer = Timer()
+    timer.tick("load_model")
     while True:
         if len(sys.argv) > 1:
             mix_id = sys.argv[1] # optional one-time command line mix request to be followed by polling

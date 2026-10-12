@@ -1,0 +1,33 @@
+# This file (mix_worker.service) belongs in /etc/systemd/system/
+[Unit]
+Description=Mix worker for Collective Chant program
+After=network.target
+[Service]
+Type=simple
+User=john
+WorkingDirectory=/home/john/Desktop/universe
+ExecStart=/home/john/Desktop/universe/.venv/bin/python3 /home/john/Desktop/universe/mix_worker.py
+Environment="PYTHONUNBUFFERED=1"
+Nice=15
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+CPUWeight=40
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mix_worker
+[Install]
+WantedBy=multi-user.target
+
+# Enable and start the service
+# sudo systemctl daemon-reload # tell systemd about a new or modified service file
+# sudo systemctl enable mix_worker # start automatically on boot
+# sudo systemctl start mix_worker # start it right now; reload not needed if no change
+
+# Useful management commands
+# sudo systemctl status mix_worker # see if it’s running
+# sudo systemctl stop mix_worker
+# sudo systemctl restart mix_worker
+# sudo journalctl -u mix_worker -f # follow the logs in real time
+# sudo journalctl -u mix_worker -n 100 # last 100 log lines
