@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 
 """
-mix_worker.py - standalone program to mix audio files found in uploads/*.webm and save the result to the mixes directory.
-                The only command line argument is the mix number.
+mix_worker.py - standalone program to mix .webm audio files found in the uploads directory; result saved to the mixes directory.
 
-To improve effectiveness, audio blobs are split into stanzas (that should be less than 30 seconds in duration, to avoid ASR degredation)
-according to >1 second gaps of silence between them. After splitting, stanzas are shifted and compressed/stretched to match a
-reference    in static/ref_path.
+The only command line argument is the mix_id and it is optional. After that mix is done, or if not given, the program
+starts polling the mixes directory for signal files of the form <mix_id>.mix. If any are found, a mix is started.
+The signal file is removed and the resulting mix is placed in the same directory. Polling resumes.
 
-Automatic Speech Recognition is done by faster_whisper, which downloads and caches a model when first run. Recognized text
-must match the reference text in stanzas_file within max_stanza_errors per stanza. Stanzas in stanzas_file are separated by blank lines.
+To improve ASR (Automatic Speech Recognition) accuracy, audio blobs are split into stanzas
+(that should be less than 30 seconds in duration, to avoid ASR degredation) according to >1 second gaps of silence between them.
+After splitting, stanzas are shifted and compressed/stretched to match a reference in static/ref_path.
 
-Currently works only on Linux. Must install: ffmpeg and pyrubberband-cli
+ASR is done by faster_whisper, which downloads and caches a model when first run. Recognized text
+must match the reference text in stanzas_path within max_stanza_errors per stanza. Stanzas in stanzas_path are separated by blank lines.
+
+Configured for Linux. Must install: ffmpeg and pyrubberband-cli
 """
 import json, os, re, shutil, sys, time, subprocess, math
 import numpy as np, pyrubberband as pyrb, soundfile as sf
@@ -27,9 +30,8 @@ class Const:
     mixes_dir = "mixes"
     tmp_dir = "tmp"
     ref_path = "static/ref_chant.webm"
-    stanzas_file = "static/stanzas.txt"
+    stanzas_path = "static/stanzas.txt"
     stanza_tmp_dir = "tmp/chant_stanzas"
-    stanza_tmp_cleanup = False
     # prepare_audio()
     ffmpeg_timeout = 60.0
     target_sample_rate = 16000
@@ -87,17 +89,6 @@ class Util:
         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}")
         if level == 0: sys.exit(1)
     @staticmethod
-    def get_uploads(uploads_dir):
-        return sorted(p for p in uploads_dir.iterdir() if p.is_file() and p.name.endswith(".webm"))
-    @staticmethod
-    def delete_uploads(uploads):
-        for path in uploads:
-            try:
-                os.remove(path)
-                Util.log(f"Deleted: {path.name}", 2)
-            except FileNotFoundError: Util.log(f"File not found (may have been deleted): {path.name}", 2)
-            except PermissionError: Util.log(f"Permission denied: {path.name}", 2)
-    @staticmethod
     def create_silence(duration_ms):
         return AudioSegment.silent(duration=duration_ms, frame_rate=Const.target_sample_rate)
     @staticmethod
@@ -112,6 +103,26 @@ class Util:
     def normalize_to_target(audio):
         if audio.max_dBFS <= -180: return audio # digital silence
         return audio.apply_gain(min(Const.target_db - audio.dBFS, -Const.headroom_db - audio.max_dBFS))
+
+class FS:
+    @staticmethod
+    def check_dirs_files(*dfs):
+        df_paths = []
+        for df in dfs:
+            df_path = Path(df)
+            if not df_path.is_dir() and not df_path.is_file(): Util.log(f"ERROR: directory/file not found: {df_path.name}", 0)
+            df_paths.append(df_path)
+        return tuple(df_paths)
+    @staticmethod
+    def get_mix_signal(mixes_dir):
+        matches = [p for p in mixes_dir.iterdir() if p.is_file() and p.name.endswith(".mix")]
+        if not matches: return False
+        path = matches[0]
+        path.unlink()
+        return path.stem
+    @staticmethod
+    def get_uploads(uploads_dir):
+        return sorted(p for p in uploads_dir.iterdir() if p.is_file() and p.name.endswith(".webm"))
     @staticmethod
     def write_audio_atomic(audio, out_path):
         part = out_path.with_suffix(out_path.suffix + ".part")
@@ -123,19 +134,19 @@ class Util:
         part = out_path.with_suffix(out_path.suffix + ".part")
         with open(part, "w") as fh: json.dump(obj, fh)
         os.replace(part, out_path)
-
+    
 class Whisper:
     model = None
     @classmethod
-    def load_model(cls):
-        if cls.model is None: cls.model = WhisperModel(Const.model_name, device=Const.device, compute_type=Const.compute_type)
+    def load_model(cls, model_name):
+        if cls.model is None: cls.model = WhisperModel(model_name, device=Const.device, compute_type=Const.compute_type)
 
 class ReferenceText:
     words = []
     num_stanzas = 0
     @classmethod
-    def load_stanzas(cls):
-        with open(Path(Const.stanzas_file), 'r', encoding='utf-8') as f:
+    def load_stanzas(cls, stanzas_path):
+        with open(stanzas_path, 'r', encoding='utf-8') as f:
             current_block = []
             for line in f:
                 line = line.rstrip()
@@ -220,7 +231,7 @@ class Stanza:
             if not stanza.score_stanza(tmp_dir, error_code):
                 passed = False
                 break
-        if Const.stanza_tmp_cleanup: shutil.rmtree(tmp_dir, ignore_errors=True)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
         return passed
     @staticmethod
     def align_stanzas(up_stanzas, ref_stanzas, error_code):
@@ -269,11 +280,10 @@ class Audio:
                 tail = proc.stderr.decode(errors="replace")[-400:] if proc.stderr else ""
                 raise RuntimeError(f"ffmpeg failed (rc={proc.returncode}) on {self.path}: {tail}")
             audio = AudioSegment.from_wav(str(dst_path))
-            try: dst_path.unlink()
-            except OSError as exc: raise RuntimeError("Unable to delete temporary wav file {dst_path}") from exc
         except RuntimeError as exc:
             Util.log(f"  REJECT {self.path.name}: Audio preparation failed ({exc})", self.error_code)
             return False
+        finally: dst_path.unlink()
         self.audio = audio.set_frame_rate(Const.target_sample_rate).set_channels(1).set_sample_width(2)
         return True
 
@@ -308,7 +318,7 @@ class Audio:
             if Util.compute_ratio(self.duration_ms, self.ref_duration_ms, self.error_code) is False: return False
             timer.tick("check_ratio")
         self.audio = Util.normalize_to_target(self.audio)
-        timer.tick("normalize")
+        timer.tick("normalize_audio")
         if not self.split_into_stanzas(): return False
         timer.tick("split_stanzas")
         if not Stanza.score_stanzas(self.stanzas, self.error_code): return False
@@ -333,14 +343,14 @@ class Mix:
         self.mixed_audio = canvas
     def process(self, mix_id, mixes_dir, timer):
         self.equal_gain_mix()
-        timer.tick("mix")
+        timer.tick("mix_audio")
         self.mixed_audio = Util.normalize_to_target(self.mixed_audio)
-        timer.tick("normalize")
+        timer.tick("normalize_audio")
         mixed_audio_path = mixes_dir / f"{mix_id}.webm"
-        Util.write_audio_atomic(self.mixed_audio, mixed_audio_path)
-        timer.tick("encode")
-        Util.write_json_atomic(self.contributors, mixes_dir / f"{mix_id}.json")
-        timer.tick("publish")
+        FS.write_audio_atomic(self.mixed_audio, mixed_audio_path)
+        timer.tick("publish_audio")
+        FS.write_json_atomic(self.contributors, mixes_dir / f"{mix_id}.json")
+        timer.tick("publish_json")
         return mixed_audio_path, self.mixed_audio
 
 def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
@@ -352,12 +362,13 @@ def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
     contributions = []
     contributions.append(ref_audio) # append reference multiple times?
     Util.log(f"Starting processing of uploads for mix {mix_id}...", 1)
-    uploads = Util.get_uploads(uploads_dir)
+    uploads = FS.get_uploads(uploads_dir)
     Util.log(f"Found {len(uploads)} submitted file(s).", 1)
     contributors = []
     for path in uploads:
         Util.log(f"Processing {path.name}...", 1)
         audio, duration_ms, stanzas = Audio(path, 1, ref_duration_ms, ref_stanzas).process(timer)
+        path.unlink()
         contributions.append(audio)
         matches = re.compile(r"^([^.]+)\.([^.]+)\.(.+)\.webm$").match(path.name)
         if matches: md5, token, ip = matches.groups()
@@ -367,26 +378,22 @@ def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
     timer.tick("all_uploads")
     Util.log(f"Mixing {len(contributions)} accepted contributions...", 1)
     log_stats(*Mix(contributions, contributors).process(mix_id, mixes_dir, timer))
-    # Util.delete_uploads(uploads)
     timer.report()
 
 def main():
-    if len(sys.argv) < 2: Util.log("Usage: mix_worker.py <mix_id>", 0)
-    mix_id = sys.argv[1]
-    uploads_dir = Path(Const.uploads_dir)
-    if not uploads_dir.is_dir(): Util.log(f"ERROR: uploads dir not found: {uploads_dir}", 0)
-    mixes_dir = Path(Const.mixes_dir)
-    if not mixes_dir.is_dir(): Util.log(f"ERROR: mixes dir not found: {mixes_dir}", 0)
-    tmp_dir = Path(Const.tmp_dir)
-    if not tmp_dir.is_dir(): Util.log(f"ERROR: tmp dir not found: {tmp_dir}", 0)
-    ref_path = Path(Const.ref_path)
-    if not ref_path.is_file(): Util.log(f"ERROR: reference audio not found: {ref_path}", 0)
-    stanzas_file = Path(Const.stanzas_file)
-    if not stanzas_file.is_file(): Util.log(f"ERROR: reference audio not found: {stanzas_file}", 0)
-    ReferenceText.load_stanzas()
-    Whisper.load_model()
+    ReferenceText.load_stanzas(*FS.check_dirs_files(Const.stanzas_path))
+    Whisper.load_model(Const.model_name)
     timer = Timer()
-    run(mix_id, uploads_dir, mixes_dir, ref_path, timer)
+    while True:
+        if len(sys.argv) > 1:
+            mix_id = sys.argv[1] # optional one-time command line mix request to be followed by polling
+            sys.argv = [sys.argv[0]]
+        else: mix_id = FS.get_mix_signal(*FS.check_dirs_files(Const.mixes_dir))
+        if not mix_id:
+            time.sleep(2)
+            continue
+        Util.log(f"Processing mix {mix_id}...", 1)
+        run(mix_id, *FS.check_dirs_files(Const.uploads_dir, Const.mixes_dir, Const.ref_path), timer)
 
 if __name__ == "__main__":
     main()
