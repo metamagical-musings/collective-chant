@@ -11,8 +11,8 @@ To improve ASR (Automatic Speech Recognition) accuracy, audio blobs are split in
 (that should be less than 30 seconds in duration, to avoid ASR degredation) according to >1 second gaps of silence between them.
 After splitting, stanzas are shifted and compressed/stretched to match a reference in static/ref_path.
 
-ASR is done by faster_whisper, which downloads and caches a model when first run. Recognized text
-must match the reference text in stanzas_path within max_stanza_errors per stanza. Stanzas in stanzas_path are separated by blank lines.
+ASR is done by faster_whisper, which downloads and caches a model when first run. Recognized text must match the reference text
+in stanzas_path within max_stanza_word_errors per stanza. Stanzas in stanzas_path are separated by blank lines.
 
 Configured for Linux. Must install: ffmpeg and pyrubberband-cli
 """
@@ -48,10 +48,6 @@ class Const:
     min_speech_ms = 250          # discard nonsilent segments shorter than this
     silence_thresh_offset = 15   # dBFS offset below overall level for silence detect
     seek_step_ms = 10            # resolution of silence detection
-    # Whisper.load_model()
-    device = "cpu"
-    compute_type = "int8"
-    model_name = "base.en"
     # score_stanzas()
     beam_size = 5
     temperature = 0.0
@@ -61,7 +57,13 @@ class Const:
     log_prob_threshold = -1.0
     no_speech_threshold = 0.6
     vad_filter = True
-    max_stanza_errors = 1
+    max_stanza_word_errors = 1
+    # align_stanzas()
+    max_stanza_duration_errors = 1
+    # Whisper.load_model()
+    device = "cpu"
+    compute_type = "int8"
+    model_name = "base.en"
 
 class Timer:
     def __init__(self):
@@ -123,6 +125,14 @@ class FS:
     @staticmethod
     def get_uploads(uploads_dir):
         return sorted(p for p in uploads_dir.iterdir() if p.is_file() and p.name.endswith(".webm"))
+    @staticmethod
+    def delete_uploads(uploads):
+        for path in uploads:
+            try:
+                os.remove(path)
+                Util.log(f"Deleted: {path.name}", 2)
+            except FileNotFoundError: Util.log(f"File not found (may have been deleted): {path.name}", 2)
+            except PermissionError: Util.log(f"Permission denied: {path.name}", 2)
     @staticmethod
     def write_audio_atomic(audio, out_path):
         part = out_path.with_suffix(out_path.suffix + ".part")
@@ -215,14 +225,14 @@ class Stanza:
         except Exception as exc:
             Util.log(f"  REJECT: Scoring aborted for stanza {self.index} ({exc})", error_code)
             return False
-        if wed > Const.max_stanza_errors:
-            Util.log(f"  REJECT: {wed} stanza word errors > {Const.max_stanza_errors}", error_code)
+        if wed > Const.max_stanza_word_errors:
+            Util.log(f"  REJECT: {wed} stanza word errors > {Const.max_stanza_word_errors}", error_code)
             return False
         return True
     @staticmethod
     def score_stanzas(stanzas, error_code):
         if len(stanzas) != ReferenceText.num_stanzas:
-            Util.log(f"  REJECT: detected {len(stanzas)} stanzas, expected {ReferenceText.num_stanzas}", 1)
+            Util.log(f"  REJECT: Detected {len(stanzas)} stanzas, expected {ReferenceText.num_stanzas}", error_code)
             return False
         tmp_dir = Path(Const.stanza_tmp_dir)
         tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -239,7 +249,7 @@ class Stanza:
             ref_ms = len(reference)
             seg_ms = len(audio)
             ratio = Util.compute_ratio(seg_ms, ref_ms, error_code)
-            if ratio is False: return Util.create_silence(ref_ms)
+            if ratio is False: return Util.create_silence(ref_ms), True
             samples = np.array(audio.get_array_of_samples())
             if audio.channels == 2: samples = samples.reshape((-1, 2))
             samples = samples.astype(np.float32) / (2 ** (8 * audio.sample_width - 1))
@@ -247,16 +257,19 @@ class Stanza:
             buf = BytesIO()
             sf.write(buf, stretched, audio.frame_rate, format="WAV", subtype="PCM_16")
             buf.seek(0)
-            return AudioSegment.from_file(buf, format="wav")
+            return AudioSegment.from_file(buf, format="wav"), False
         if len(up_stanzas) != len(ref_stanzas):
-            Util.log(f"  REJECT: Stanzas mismatch (upload {len(up_stanzas)} vs reference {len(ref_stanzas)})", error_code)
+            Util.log(f"  REJECT: Detected {len(up_stanzas)} upload stanzas, expected {ReferenceText.num_stanzas}", error_code)
             return False
         total_ms = ref_stanzas[-1].end_ms
         canvas = Util.create_silence(total_ms)
+        num_silent_segs = 0
         for up, ref in zip(up_stanzas, ref_stanzas):
-            seg = match_duration_preserve_pitch(up.audio, ref.audio)
+            seg, silent = match_duration_preserve_pitch(up.audio, ref.audio)
+            if silent: num_silent_segs += 1
             if ref.start_ms + len(seg) > total_ms: seg = seg[: max(total_ms - ref.start_ms, 0)] # Clamp to avoid overflow.
             canvas = canvas.overlay(seg, position=max(ref.start_ms, 0))
+        if num_silent_segs > Const.max_stanza_duration_errors: return False
         return canvas
 
 class Audio:
@@ -283,7 +296,8 @@ class Audio:
         except RuntimeError as exc:
             Util.log(f"  REJECT {self.path.name}: Audio preparation failed ({exc})", self.error_code)
             return False
-        finally: dst_path.unlink()
+        finally:
+            if dst_path.is_file(): dst_path.unlink()
         self.audio = audio.set_frame_rate(Const.target_sample_rate).set_channels(1).set_sample_width(2)
         return True
 
@@ -324,9 +338,10 @@ class Audio:
         if not Stanza.score_stanzas(self.stanzas, self.error_code): return False
         timer.tick("score_stanzas")
         if self.ref_duration_ms is not False and self.ref_stanzas is not False:
-            self.audio = Stanza.align_stanzas(self.stanzas, self.ref_stanzas, self.error_code)
+            res = Stanza.align_stanzas(self.stanzas, self.ref_stanzas, self.error_code)
+            if res is False: return False
+            self.audio = res
             timer.tick("align_stanzas")
-            if self.audio is False: return False
         return self.audio, self.duration_ms, self.stanzas
 
 class Mix:
@@ -367,8 +382,9 @@ def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
     contributors = []
     for path in uploads:
         Util.log(f"Processing {path.name}...", 1)
-        audio, duration_ms, stanzas = Audio(path, 1, ref_duration_ms, ref_stanzas).process(timer)
-        path.unlink()
+        res = Audio(path, 1, ref_duration_ms, ref_stanzas).process(timer)
+        if res is False: continue
+        audio, duration_ms, stanzas = res
         contributions.append(audio)
         matches = re.compile(r"^([^.]+)\.([^.]+)\.(.+)\.webm$").match(path.name)
         if matches: md5, token, ip = matches.groups()
@@ -378,6 +394,7 @@ def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
     timer.tick("all_uploads")
     Util.log(f"Mixing {len(contributions)} accepted contributions...", 1)
     log_stats(*Mix(contributions, contributors).process(mix_id, mixes_dir, timer))
+    # Util.delete_uploads(uploads)
     timer.report()
 
 def main():
@@ -386,17 +403,21 @@ def main():
     ReferenceText.load_stanzas(*FS.check_dirs_files(Const.stanzas_path))
     Whisper.load_model(Const.model_name)
     timer.tick("load_model")
-    while True:
-        if len(sys.argv) > 1:
-            mix_id = sys.argv[1] # optional one-time command line mix request to be followed by polling
-            sys.argv = [sys.argv[0]]
-        else: mix_id = FS.get_mix_signal(*FS.check_dirs_files(Const.mixes_dir))
-        if not mix_id:
-            time.sleep(2)
-            continue
-        Util.log(f"Processing mix {mix_id}...", 1)
-        run(mix_id, *FS.check_dirs_files(Const.uploads_dir, Const.mixes_dir, Const.ref_path), timer)
-
+    FS.check_dirs_files(Const.tmp_dir)
+    try:
+        while True:
+            if len(sys.argv) > 1:
+                mix_id = sys.argv[1] # optional one-time command line mix request to be followed by polling
+                sys.argv = [sys.argv[0]]
+            else: mix_id = FS.get_mix_signal(*FS.check_dirs_files(Const.mixes_dir))
+            if not mix_id:
+                time.sleep(2)
+                continue
+            Util.log(f"Processing mix {mix_id}...", 1)
+            run(mix_id, *FS.check_dirs_files(Const.uploads_dir, Const.mixes_dir, Const.ref_path), timer)
+    except KeyboardInterrupt:
+        Util.log("Program terminated by user.", 1)
+        return
 if __name__ == "__main__":
     main()
     sys.exit(0)
