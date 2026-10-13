@@ -403,7 +403,7 @@ def main():
     ReferenceText.load_stanzas(*FS.check_dirs_files(Const.stanzas_path))
     Whisper.load_model(Const.model_name)
     timer.tick("load_model")
-    FS.check_dirs_files(Const.tmp_dir)
+    uploads_dir, mixes_dir, ref_path, tmp_dir = FS.check_dirs_files(Const.uploads_dir, Const.mixes_dir, Const.ref_path, Const.tmp_dir)
     try:
         while True:
             if len(sys.argv) > 1:
@@ -414,7 +414,7 @@ def main():
                 time.sleep(2)
                 continue
             Util.log(f"Processing mix {mix_id}...", 1)
-            run(mix_id, *FS.check_dirs_files(Const.uploads_dir, Const.mixes_dir, Const.ref_path), timer)
+            run(mix_id, uploads_dir, mixes_dir, ref_path, timer)
     except KeyboardInterrupt:
         Util.log("Program terminated by user.", 1)
         return
