@@ -1,4 +1,4 @@
-import sys, os, json, time, secrets, asyncio, uvicorn, hashlib, subprocess
+import sys, os, json, time, secrets, asyncio, uvicorn, hashlib
 from datetime import datetime
 from pathlib import Path
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, BackgroundTasks, UploadFile, HTTPException
@@ -24,14 +24,14 @@ class Const:
     rec_slots_per_time_slot = 1.5 # float
     rec_slot_lifespan = 6 # number of time_slots
     rec_slot_duration_sec = rec_slot_lifespan * time_slot_duration_sec
-    rec_tolerance_sec = 11
+    rec_tolerance_sec = 30
     uploads_dir = "uploads"
     mixes_dir = "mixes"
     mix_timeout = 300
     uploads_per_mix = 2
     max_upload_size = 10 * 1024 * 1024
     max_queue_size = 100
-    ref_chant = "mantra.webm"
+    ref_chant = "ref_chant.webm"
     word_list = "bip39_english.txt"
 
 class GetCurrent:
@@ -73,19 +73,17 @@ class Mix:
             log(f"Error saving upload {filename}", 1, "[Mix]")
     @staticmethod
     def launch_mix_process(mix_id):
-        cmd = ["nice", "-n", "19", "ionice", "-c", "3", sys.executable, "mix_worker.py", str(mix_id), Const.uploads_dir, Const.mixes_dir, Const.ref_chant]
-        log(f"Launching mix process: {' '.join(cmd)}", 2, "[Mix]")
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        log(f"Mix process started with PID: {process.pid}", 1,  "[Mix]")
+        Path(f"{Const.mixes_dir}/{mix_id}.mix").touch()
+        log(f"Mix process started with ID: {mix_id}", 1,  "[Mix]")
         return
     @staticmethod
     async def wait_for_mix_completion(mix_id):
         log(f"Waiting for mix {mix_id} to complete...", 2, "[Mix]")
-        mix_file = os.path.join(Const.mixes_dir, f"{mix_id}.webm")
-        contributors_file = os.path.join(Const.mixes_dir, f"{mix_id}.json")
+        mix_file = Path(Const.mixes_dir) / f"{mix_id}.webm"
+        contributors_file = Path(Const.mixes_dir) / f"{mix_id}.json"
         start_time = time.time()
         while time.time() - start_time < Const.mix_timeout:
-            if os.path.exists(contributors_file) and os.path.exists(mix_file):
+            if contributors_file.exists() and mix_file.exists():
                 log(f"Mix contributors file found: {contributors_file}", 1, "[Mix]")
                 log(f"Mix audio file found: {mix_file}", 1, "[Mix]")
                 return (contributors_file, mix_file)
