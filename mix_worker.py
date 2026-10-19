@@ -3,18 +3,18 @@
 """
 mix_worker.py - standalone program to mix .webm audio files found in the uploads directory; result saved to the mixes directory.
 
-The only command line argument is the mix_id and it is optional. After that mix is done, or if not given, the program
+The only command line argument is mix_id and it is optional. After that mix is done, or if not given, the program
 starts polling the mixes directory for signal files of the form <mix_id>.mix. If any are found, a mix is started.
 The signal file is removed and the resulting mix is placed in the same directory. Polling resumes.
 
-To improve ASR (Automatic Speech Recognition) accuracy, audio blobs are split into stanzas
-(that should be less than 30 seconds in duration, to avoid ASR degredation) according to >1 second gaps of silence between them.
-After splitting, stanzas are shifted and compressed/stretched to match a reference in static/ref_path.
+To avoid ASR degredation (Automatic Speech Recognition) accuracy, audio blobs are split into stanzas
+that should be less than 30 seconds in duration, according to >1 second gaps of silence between them.
+After splitting, stanzas are shifted and compressed/stretched to match a reference audio in ref_path.
 
-ASR is done by faster_whisper, which downloads and caches a model when first run. Recognized text must match the reference text
-in stanzas_path within max_stanza_word_errors per stanza. Stanzas in stanzas_path are separated by blank lines.
+ASR is done by faster_whisper, which downloads and caches a model when first run. Recognized text must match the reference
+text in stanzas_path within max_stanza_word_errors per stanza. Stanzas in stanzas_path are separated by blank lines.
 
-Configured for Linux. Must install: ffmpeg and pyrubberband-cli
+Developed on Linux. Must install: ffmpeg and pyrubberband-cli
 """
 import json, os, re, shutil, sys, time, subprocess, math
 import numpy as np, pyrubberband as pyrb, soundfile as sf
@@ -30,8 +30,10 @@ class Const:
     mixes_dir = "mixes"
     tmp_dir = "tmp"
     ref_path = "static/ref_chant.webm"
+    ref_path_ticks = "static/ref_chant_ticks.webm"
     stanzas_path = "static/stanzas.txt"
     stanza_tmp_dir = "tmp/chant_stanzas"
+    stanza_gap_ms = 1500
     # prepare_audio()
     ffmpeg_timeout = 60.0
     target_sample_rate = 16000
@@ -112,7 +114,7 @@ class FS:
         df_paths = []
         for df in dfs:
             df_path = Path(df)
-            if not df_path.is_dir() and not df_path.is_file(): Util.log(f"ERROR: directory/file not found: {df_path.name}", 0)
+            if not df_path.exists(): Util.log(f"ERROR: directory/file not found: {df_path.name}", 0)
             df_paths.append(df_path)
         return tuple(df_paths)
     @staticmethod
@@ -136,8 +138,7 @@ class FS:
     @staticmethod
     def write_audio_atomic(audio, out_path):
         part = out_path.with_suffix(out_path.suffix + ".part")
-        with open(part, "wb") as fh:
-            audio.export(fh, format="webm", codec="libopus", bitrate=Const.bitrate)
+        with open(part, "wb") as fh: audio.export(fh, format="webm", codec="libopus", bitrate=Const.bitrate)
         os.replace(part, out_path)
     @staticmethod
     def write_json_atomic(obj, out_path):
@@ -151,8 +152,9 @@ class Whisper:
     def load_model(cls, model_name):
         if cls.model is None: cls.model = WhisperModel(model_name, device=Const.device, compute_type=Const.compute_type)
 
-class ReferenceText:
+class Reference:
     words = []
+    stanza_durations_ms = []
     num_stanzas = 0
     @classmethod
     def load_stanzas(cls, stanzas_path):
@@ -201,7 +203,7 @@ class Stanza:
                 language="en",
                 beam_size=Const.beam_size,
                 temperature=Const.temperature,
-                initial_prompt=ReferenceText.words[self.index],
+                initial_prompt=Reference.words[self.index],
                 word_timestamps=Const.word_timestamps,
                 condition_on_previous_text=Const.condition_on_previous_text,
                 compression_ratio_threshold=Const.compression_ratio_threshold,
@@ -213,7 +215,7 @@ class Stanza:
             for seg in segments: parts.append(seg.text.strip())
             language = (info.language or "").lower()
             transcript = " ".join(parts).strip()
-            wed = self.word_edit_distance(ReferenceText.words[self.index], transcript)
+            wed = self.word_edit_distance(Reference.words[self.index], transcript)
             stanza_results = {
                 "index": self.index,
                 "transcript": transcript,
@@ -231,9 +233,6 @@ class Stanza:
         return True
     @staticmethod
     def score_stanzas(stanzas, error_code):
-        if len(stanzas) != ReferenceText.num_stanzas:
-            Util.log(f"  REJECT: Detected {len(stanzas)} stanzas, expected {ReferenceText.num_stanzas}", error_code)
-            return False
         tmp_dir = Path(Const.stanza_tmp_dir)
         tmp_dir.mkdir(parents=True, exist_ok=True)
         passed = True
@@ -244,9 +243,8 @@ class Stanza:
         shutil.rmtree(tmp_dir, ignore_errors=True)
         return passed
     @staticmethod
-    def align_stanzas(up_stanzas, ref_stanzas, error_code):
-        def match_duration_preserve_pitch(audio, reference):
-            ref_ms = len(reference)
+    def align_stanzas(up_stanzas, error_code):
+        def match_duration_preserve_pitch(audio, ref_ms):
             seg_ms = len(audio)
             ratio = Util.compute_ratio(seg_ms, ref_ms, error_code)
             if ratio is False: return Util.create_silence(ref_ms), True
@@ -258,29 +256,22 @@ class Stanza:
             sf.write(buf, stretched, audio.frame_rate, format="WAV", subtype="PCM_16")
             buf.seek(0)
             return AudioSegment.from_file(buf, format="wav"), False
-        if len(up_stanzas) != len(ref_stanzas):
-            Util.log(f"  REJECT: Detected {len(up_stanzas)} upload stanzas, expected {ReferenceText.num_stanzas}", error_code)
-            return False
-        total_ms = ref_stanzas[-1].end_ms
-        canvas = Util.create_silence(total_ms)
+        gap = Util.create_silence(Const.stanza_gap_ms)
+        combined = AudioSegment.empty()
         num_silent_segs = 0
-        for up, ref in zip(up_stanzas, ref_stanzas):
-            seg, silent = match_duration_preserve_pitch(up.audio, ref.audio)
+        for up, ref_ms in zip(up_stanzas, Reference.stanza_durations_ms):
+            seg, silent = match_duration_preserve_pitch(up.audio, ref_ms)
             if silent: num_silent_segs += 1
-            if ref.start_ms + len(seg) > total_ms: seg = seg[: max(total_ms - ref.start_ms, 0)] # Clamp to avoid overflow.
-            canvas = canvas.overlay(seg, position=max(ref.start_ms, 0))
+            combined +=  gap + seg
         if num_silent_segs > Const.max_stanza_duration_errors: return False
-        return canvas
+        return combined
 
 class Audio:
-    def __init__(self, path, error_code, ref_duration_ms, ref_stanzas):
+    def __init__(self, path, error_code):
         self.path = path
         self.error_code = error_code
-        self.ref_duration_ms = ref_duration_ms
-        self.ref_stanzas = ref_stanzas
         self.audio = None
         self.stanzas = []
-        self.duration_ms = 0
 
     def prepare_audio(self):
         try:
@@ -322,27 +313,26 @@ class Audio:
             end_ms = regions[-1][1]
             blob = self.audio[start_ms:end_ms]
             self.stanzas.append(Stanza(index=idx, start_ms=start_ms, end_ms=end_ms, audio=blob))
+        if len(self.stanzas) != Reference.num_stanzas:
+            Util.log(f"  REJECT: Detected {len(self.stanzas)} upload stanzas, expected {Reference.num_stanzas}", error_code)
+            return False
         return True
 
     def process(self, timer):
         if not self.prepare_audio(): return False
         timer.tick("prepare_audio")
-        self.duration_ms = len(self.audio)
-        if self.ref_duration_ms is not False:
-            if Util.compute_ratio(self.duration_ms, self.ref_duration_ms, self.error_code) is False: return False
-            timer.tick("check_ratio")
         self.audio = Util.normalize_to_target(self.audio)
         timer.tick("normalize_audio")
         if not self.split_into_stanzas(): return False
         timer.tick("split_stanzas")
         if not Stanza.score_stanzas(self.stanzas, self.error_code): return False
         timer.tick("score_stanzas")
-        if self.ref_duration_ms is not False and self.ref_stanzas is not False:
-            res = Stanza.align_stanzas(self.stanzas, self.ref_stanzas, self.error_code)
-            if res is False: return False
-            self.audio = res
-            timer.tick("align_stanzas")
-        return self.audio, self.duration_ms, self.stanzas
+        if len(Reference.stanza_durations_ms) == 0: Reference.stanza_durations_ms = [len(stanza.audio) for stanza in self.stanzas]
+        res = Stanza.align_stanzas(self.stanzas, self.error_code)
+        if res is False: return False
+        self.audio = res
+        timer.tick("align_stanzas")
+        return self.audio, self.stanzas
 
 class Mix:
     def __init__(self, audios, contributors):
@@ -372,7 +362,7 @@ def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
     def log_stats(path, audio):
         Util.log(f"  OK {path.name}  {round(len(audio) / 1000.0, 3)}s  {round(audio.dBFS, 2)}dBFS", 1)
     Util.log(f"Start reference audio processing...", 1)
-    ref_audio, ref_duration_ms, ref_stanzas = Audio(ref_path, 0, False, False).process(timer) # never returns False
+    ref_audio, ref_stanzas = Audio(ref_path, 0).process(timer) # never returns False
     log_stats(ref_path, ref_audio)
     contributions = []
     contributions.append(ref_audio) # append reference multiple times?
@@ -382,9 +372,9 @@ def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
     contributors = []
     for path in uploads:
         Util.log(f"Processing {path.name}...", 1)
-        res = Audio(path, 1, ref_duration_ms, ref_stanzas).process(timer)
+        res = Audio(path, 1).process(timer)
         if res is False: continue
-        audio, duration_ms, stanzas = res
+        audio, stanzas = res
         contributions.append(audio)
         matches = re.compile(r"^([^.]+)\.([^.]+)\.(.+)\.webm$").match(path.name)
         if matches: md5, token, ip = matches.groups()
@@ -400,7 +390,7 @@ def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
 def main():
     Util.log("Collective Chant program", 1)
     timer = Timer()
-    ReferenceText.load_stanzas(*FS.check_dirs_files(Const.stanzas_path))
+    Reference.load_stanzas(*FS.check_dirs_files(Const.stanzas_path))
     Whisper.load_model(Const.model_name)
     timer.tick("load_model")
     uploads_dir, mixes_dir, ref_path, tmp_dir = FS.check_dirs_files(Const.uploads_dir, Const.mixes_dir, Const.ref_path, Const.tmp_dir)
