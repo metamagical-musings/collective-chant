@@ -36,9 +36,16 @@ class Const:
     stanza_gap_ms = 1500
     # prepare_audio()
     ffmpeg_timeout = 60.0
-    target_sample_rate = 16000
-    target_channels = 1
+    sample_rate = 16000
+    channels = 1
     loudnorm_filter = "loudnorm=I=-16:TP=-3:LRA=11"
+    # create_count_in_audio()
+    num_ticks = 3
+    tick_duration = 0.04
+    tick_interval = 0.8
+    tick_frequency = 1200
+    tick_amplitude = 0.6
+    tick_decay = 40.0
     # compute_ratio()
     ratio_tolerance = 0.10
     # normalize_to_target()
@@ -92,9 +99,6 @@ class Util:
         if level > Const.error_level: return
         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}")
         if level == 0: sys.exit(1)
-    @staticmethod
-    def create_silence(duration_ms):
-        return AudioSegment.silent(duration=duration_ms, frame_rate=Const.target_sample_rate)
     @staticmethod
     def compute_ratio(duration_ms, ref_duration_ms, error_code):
         if duration_ms == 0 or ref_duration_ms == 0: return False
@@ -243,11 +247,16 @@ class Stanza:
         shutil.rmtree(tmp_dir, ignore_errors=True)
         return passed
     @staticmethod
+    def combine_stanzas(stanzas):
+        combined = AudioSegment.empty()
+        for seg in stanzas: combined += Audio.count_in_audio + seg.audio
+        return combined
+    @staticmethod
     def align_stanzas(up_stanzas, error_code):
         def match_duration_preserve_pitch(audio, ref_ms):
             seg_ms = len(audio)
             ratio = Util.compute_ratio(seg_ms, ref_ms, error_code)
-            if ratio is False: return Util.create_silence(ref_ms), True
+            if ratio is False: return Audio.create_silence(ref_ms), True
             samples = np.array(audio.get_array_of_samples())
             if audio.channels == 2: samples = samples.reshape((-1, 2))
             samples = samples.astype(np.float32) / (2 ** (8 * audio.sample_width - 1))
@@ -256,27 +265,27 @@ class Stanza:
             sf.write(buf, stretched, audio.frame_rate, format="WAV", subtype="PCM_16")
             buf.seek(0)
             return AudioSegment.from_file(buf, format="wav"), False
-        gap = Util.create_silence(Const.stanza_gap_ms)
         combined = AudioSegment.empty()
+        gap = Audio.create_silence(Const.stanza_gap_ms)
         num_silent_segs = 0
         for up, ref_ms in zip(up_stanzas, Reference.stanza_durations_ms):
             seg, silent = match_duration_preserve_pitch(up.audio, ref_ms)
             if silent: num_silent_segs += 1
-            combined +=  gap + seg
+            combined += gap + seg
         if num_silent_segs > Const.max_stanza_duration_errors: return False
         return combined
 
 class Audio:
+    count_in_audio = None
     def __init__(self, path, error_code):
         self.path = path
         self.error_code = error_code
         self.audio = None
         self.stanzas = []
-
     def prepare_audio(self):
         try:
             dst_path = Path(Const.tmp_dir) / Path(self.path.name + "_asr.wav")
-            cmd = ["ffmpeg", "-y", "-i", str(self.path), "-af", Const.loudnorm_filter, "-ar", str(Const.target_sample_rate), "-ac", str(Const.target_channels), str(dst_path)]
+            cmd = ["ffmpeg", "-y", "-i", str(self.path), "-af", Const.loudnorm_filter, "-ar", str(Const.sample_rate), "-ac", str(Const.channels), str(dst_path)]
             try: proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=Const.ffmpeg_timeout)
             except FileNotFoundError as exc: raise RuntimeError("ffmpeg executable not found on PATH") from exc
             except subprocess.TimeoutExpired as exc: raise RuntimeError(f"ffmpeg timed out after {Const.ffmpeg_timeout}s") from exc
@@ -289,9 +298,8 @@ class Audio:
             return False
         finally:
             if dst_path.is_file(): dst_path.unlink()
-        self.audio = audio.set_frame_rate(Const.target_sample_rate).set_channels(1).set_sample_width(2)
+        self.audio = audio.set_frame_rate(Const.sample_rate).set_channels(1).set_sample_width(2)
         return True
-
     def split_into_stanzas(self):
         silence_thresh = self.audio.dBFS - Const.silence_thresh_offset
         nonsilent = silence.detect_nonsilent(self.audio, min_silence_len=Const.seek_step_ms, silence_thresh=silence_thresh, seek_step=Const.seek_step_ms)
@@ -317,7 +325,6 @@ class Audio:
             Util.log(f"  REJECT: Detected {len(self.stanzas)} upload stanzas, expected {Reference.num_stanzas}", error_code)
             return False
         return True
-
     def process(self, timer):
         if not self.prepare_audio(): return False
         timer.tick("prepare_audio")
@@ -327,12 +334,42 @@ class Audio:
         timer.tick("split_stanzas")
         if not Stanza.score_stanzas(self.stanzas, self.error_code): return False
         timer.tick("score_stanzas")
-        if len(Reference.stanza_durations_ms) == 0: Reference.stanza_durations_ms = [len(stanza.audio) for stanza in self.stanzas]
-        res = Stanza.align_stanzas(self.stanzas, self.error_code)
-        if res is False: return False
-        self.audio = res
+        if len(Reference.stanza_durations_ms) == 0:
+            Reference.stanza_durations_ms = [len(stanza.audio) for stanza in self.stanzas]
+            combined = Stanza.combine_stanzas(self.stanzas)
+            timer.tick("combine_stanzas")
+            FS.write_audio_atomic(combined, Path(Const.ref_path_ticks))
+            timer.tick("publish_tick_audio")
+        self.audio = Stanza.align_stanzas(self.stanzas, self.error_code)
+        if self.audio is False: return False
         timer.tick("align_stanzas")
-        return self.audio, self.stanzas
+        return self.audio
+    @staticmethod
+    def numpy_to_audiosegment(samples):
+        """Convert mono float32 array in [-1, 1] to a pydub AudioSegment."""
+        samples_int16 = np.clip(samples * 32767, -32768, 32767).astype(np.int16)
+        return AudioSegment(data=samples_int16.tobytes(), frame_rate=Const.sample_rate, sample_width=2, channels=1)
+    @staticmethod
+    def create_silence(duration_ms):
+        return AudioSegment.silent(duration=duration_ms, frame_rate=Const.sample_rate)
+    @classmethod
+    def create_count_in_audio(cls):
+        t = np.linspace(0, Const.tick_duration, int(Const.sample_rate * Const.tick_duration), endpoint=False)
+        envelope = np.exp(-Const.tick_decay * t)
+        tick = Const.tick_amplitude * envelope * np.sin(2 * np.pi * Const.tick_frequency * t)
+        tick = tick.astype(np.float32)
+        silence_len = int(Const.sample_rate * Const.tick_interval) - len(tick)
+        if silence_len < 0: raise ValueError("Tick interval is shorter than tick duration")
+        silence = np.zeros(silence_len, dtype=np.float32)
+        segments = []
+        segments.append(silence)
+        for _ in range(Const.num_ticks):
+            segments.append(tick)
+            segments.append(silence)
+        count_in = np.concatenate(segments)
+        peak = np.max(np.abs(count_in))
+        if peak > 0: count_in = count_in / peak * 0.9
+        cls.count_in_audio = cls.numpy_to_audiosegment(count_in)
 
 class Mix:
     def __init__(self, audios, contributors):
@@ -340,10 +377,10 @@ class Mix:
         self.contributors = contributors
         self.mixed_audio = None
     def equal_gain_mix(self):
-        segments = [t.set_frame_rate(Const.target_sample_rate).set_channels(2).set_sample_width(2) for t in self.audios]
+        segments = [t.set_frame_rate(Const.sample_rate).set_channels(2).set_sample_width(2) for t in self.audios]
         attenuation_db = 20.0 * math.log10(len(segments)) # safe starting value for coherent case; 16–18 for naturally variable voices
         attenuated = [t - attenuation_db for t in segments]
-        canvas = Util.create_silence(max(len(t) for t in attenuated))
+        canvas = Audio.create_silence(max(len(t) for t in attenuated))
         for t in attenuated: canvas = canvas.overlay(t)
         self.mixed_audio = canvas
     def process(self, mix_id, mixes_dir, timer):
@@ -362,7 +399,7 @@ def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
     def log_stats(path, audio):
         Util.log(f"  OK {path.name}  {round(len(audio) / 1000.0, 3)}s  {round(audio.dBFS, 2)}dBFS", 1)
     Util.log(f"Start reference audio processing...", 1)
-    ref_audio, ref_stanzas = Audio(ref_path, 0).process(timer) # never returns False
+    ref_audio = Audio(ref_path, 0).process(timer) # never returns False
     log_stats(ref_path, ref_audio)
     contributions = []
     contributions.append(ref_audio) # append reference multiple times?
@@ -372,9 +409,8 @@ def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
     contributors = []
     for path in uploads:
         Util.log(f"Processing {path.name}...", 1)
-        res = Audio(path, 1).process(timer)
-        if res is False: continue
-        audio, stanzas = res
+        audio = Audio(path, 1).process(timer)
+        if audio is False: continue
         contributions.append(audio)
         matches = re.compile(r"^([^.]+)\.([^.]+)\.(.+)\.webm$").match(path.name)
         if matches: md5, token, ip = matches.groups()
@@ -391,6 +427,7 @@ def main():
     Util.log("Collective Chant program", 1)
     timer = Timer()
     Reference.load_stanzas(*FS.check_dirs_files(Const.stanzas_path))
+    Audio.create_count_in_audio()
     Whisper.load_model(Const.model_name)
     timer.tick("load_model")
     uploads_dir, mixes_dir, ref_path, tmp_dir = FS.check_dirs_files(Const.uploads_dir, Const.mixes_dir, Const.ref_path, Const.tmp_dir)
