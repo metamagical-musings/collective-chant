@@ -1,21 +1,4 @@
 #!/usr/bin/env python3
-
-"""
-mix_worker.py - standalone program to mix .webm audio files found in the uploads directory; result saved to the mixes directory.
-
-The only command line argument is mix_id and it is optional. After that mix is done, or if not given, the program
-starts polling the mixes directory for signal files of the form <mix_id>.mix. If any are found, a mix is started.
-The signal file is removed and the resulting mix is placed in the same directory. Polling resumes.
-
-To avoid ASR degredation (Automatic Speech Recognition) accuracy, audio blobs are split into stanzas
-that should be less than 30 seconds in duration, according to >1 second gaps of silence between them.
-After splitting, stanzas are shifted and compressed/stretched to match a reference audio in ref_path.
-
-ASR is done by faster_whisper, which downloads and caches a model when first run. Recognized text must match the reference
-text in stanzas_path within max_stanza_word_errors per stanza. Stanzas in stanzas_path are separated by blank lines.
-
-Developed on Linux. Must install: ffmpeg and pyrubberband-cli
-"""
 import json, os, re, shutil, sys, time, subprocess, math
 import numpy as np, pyrubberband as pyrb, soundfile as sf
 from datetime import datetime
