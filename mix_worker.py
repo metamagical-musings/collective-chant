@@ -33,7 +33,6 @@ class Const:
     ref_path_ticks = "static/ref_chant_ticks.webm"
     stanzas_path = "static/stanzas.txt"
     stanza_tmp_dir = "tmp/chant_stanzas"
-    stanza_gap_ms = 1500
     # prepare_audio()
     ffmpeg_timeout = 60.0
     sample_rate = 16000
@@ -46,15 +45,13 @@ class Const:
     tick_frequency = 1200
     tick_amplitude = 0.3
     tick_decay = 40.0
-    # compute_ratio()
-    ratio_tolerance = 0.10
     # normalize_to_target()
     headroom_db = 6.0
     target_db = -14.0
     bitrate = "24k" # bps
     # split_into_stanzas()
-    gap_threshold_ms = 1000      # minimum gap to qualify as a stanza boundary
-    min_speech_ms = 250          # discard nonsilent segments shorter than this
+    gap_threshold_ms = 1000      # minimum silence gap to qualify as a stanza boundary
+    min_speech_ms = 250          # skip nonsilent segments shorter than this when detecting silence gap
     silence_thresh_offset = 15   # dBFS offset below overall level for silence detect
     seek_step_ms = 10            # resolution of silence detection
     # score_stanzas()
@@ -66,9 +63,12 @@ class Const:
     log_prob_threshold = -1.0
     no_speech_threshold = 0.6
     vad_filter = True
-    max_stanza_word_errors = 1
+    max_stanza_word_errors = 1     # if any single stanza exceeds this word error limit, the entire audio is rejected.
+    # compute_ratio()
+    ratio_tolerance = 0.10         # any stanza that must be stretched/compressed more than a factor of 1 +/- this value is silenced.
     # align_stanzas()
-    max_stanza_duration_errors = 1
+    max_stanza_duration_errors = 1 # if more than this number of stanzas are silenced, the entire audio is rejected.
+    stanza_gap_ms = 1500           # gap of silence to be inserted between stanzas when reassembled
     # Whisper.load_model()
     device = "cpu"
     compute_type = "int8"

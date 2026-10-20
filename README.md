@@ -4,15 +4,48 @@ A website to facilitate a collective chant or prayer. Under development.
 ## Installation
 During development I am running the Collective Chant software on a local Linux box, inside a Python virtual environment. The software uses the Python FastAPI module to serve web pages over my local network to a browser running on my Windows system. I edited my Windows hosts file so that I can use the URL https://fastapi.local to open the main page. To use HTTPS, certificate files were created and placed in the project directory, but a port other than 443 could have been used for testing so that a certificate would not be needed.
 
-1. Install Python
-2. Create a project directory cc: mkdir cc
-3. Inside cc, create a virtual environment: python3 -m venv .venv
-4. Activate the venv: source .venv/bin/activate
-5. Download the project software from this Github repository (Download ZIP, under the Code button) and place it in the cc directory.
-6. Install dependencies: pip install -r requirements.txt
-7. If using HTTPS, run: sudo setcap 'cap_net_bind_service=+ep' $(readlink -f .venv/bin/python3) to allow binding to port 443.
-8. If using HTTPS, create a certificate using mkcert, for example, and place fastapi.crt, fastapi.key, fastapi.pfx in the project directory.
-9. Start the software: python3 main.py
-10. Open the main Collective Chant page in a browser after editing the hosts file: https://fastapi.local
+1. Install Python on your Linux system.
+2. Create a project directory cc: `mkdir cc`
+3. Inside cc, create a virtual environment: `python3 -m venv .venv`
+4. Activate the venv: `source .venv/bin/activate`
+5. Download the project software from this Github repository (Download ZIP, under the Code button) and unzip it into the cc directory.
+6. Install Python dependencies: `pip install -r requirements.txt`
+7. Install Linux system dependencies: `sudo apt update && sudo apt install ffmpeg && sudo apt pyrubberband-cli`
+8. If using HTTPS, run: `sudo setcap 'cap_net_bind_service=+ep' $(readlink -f .venv/bin/python3)` (to allow binding to port 443)
+9. If using HTTPS, create a certificate using mkcert, for example, and place fastapi.crt, fastapi.key, fastapi.pfx in the project directory.
+10. Start mix_worker.py if it was not automatically started on bootup: `python3 mix_worker.py`
+11. In a separate terminal, start the main program (optionally using the screen program to allow for disconnection): `python3 main.py`
+12. Add a line like **xxx.xxx.xxx.xxx fastapi.local**  to the hosts file on your remote system, in admin/superuser mode.
+13. Open the main Collective Chant page in a browser on your remote system: https://fastapi.local
 
-Of course it is possible for the server and browser to be on the same system. I used a local Linux box for the server to approximate using a public server.
+## `mix_worker.py`
+This is a standalone program which mixes `.webm` audio files found in the `uploads` directory; result saved to the `mixes` directory.
+
+The only command line argument is `mix_id` and it is optional. After that mix is done, or if not given, the program
+starts polling the `mixes` directory for signal files of the form `<mix_id>.mix`. If any are found, a mix is started.
+The signal file is removed and the resulting mix is placed in the same directory with the name `<mix_id>.webm`,
+along with a `<mix_id>.json file` containing a dictionary of contributors to the mix. Polling resumes.
+
+Automatic Speech Recognition (ASR) is used to ensure that uploaded audios are faithful recitations of the reference chant.
+To avoid ASR degredation, audio blobs are split into stanzas that should be less than 30 seconds in duration,
+as determined by gaps of (near) silence between them. After splitting, stanzas are compressed/stretched
+to match a reference audio in `ref_path`, then transcribed using ASR and checked for accuracy relative to the reference text
+in `stanzas_path` (which uses blank lines to separate stanzas), then reassembled with a predetermined gap of silence between
+them in preparation for the mix. The reference chant itself is split then reassembled with 3-tick count-ins between them
+to help chanters synchronize with the reference chant when recording and audio for upload, and stored in `ref_path_ticks`
+for use by `main.py`.
+
+ASR is done by the module `faster_whisper`, which automatically downloads and caches a model when `mix_worker.py` is first run.
+`mix_worker.py` can run as a service started manually or automatically at bootup by registering `mix_worker.service`
+with the system. Instructions are included as comments in the service file itself. This ensures that the very large
+model is only loaded into memory once per session (not per mix).
+
+There are many constants in `mix_worker.py` which can be modified. Some that are more likely to be adjusted are:
+
+gap_threshold_ms = 1000        # minimum (near) silence gap in uploaded audio to qualify as a stanza boundary.
+min_speech_ms = 250            # discard nonsilent segments shorter than this when detecting silence gap.
+silence_thresh_offset = 15     # dBFS offset below overall level for silence detect.
+stanza_gap_ms = 1500           # gap of silence to be inserted between stanzas when reassembled.
+max_stanza_word_errors = 1     # if any single stanza exceeds this word error limit, the entire audio is rejected.
+ratio_tolerance = 0.1          # any stanza that must be stretched/compressed more than a factor of 1 +/- this value is silenced.
+max_stanza_duration_errors = 1 # if more than this number of stanzas are silenced, the entire audio is rejected.
