@@ -44,7 +44,7 @@ class Const:
     tick_duration = 0.04
     tick_interval = 0.8
     tick_frequency = 1200
-    tick_amplitude = 0.6
+    tick_amplitude = 0.3
     tick_decay = 40.0
     # compute_ratio()
     ratio_tolerance = 0.10
@@ -339,7 +339,7 @@ class Audio:
             combined = Stanza.combine_stanzas(self.stanzas)
             timer.tick("combine_stanzas")
             FS.write_audio_atomic(combined, Path(Const.ref_path_ticks))
-            timer.tick("publish_tick_audio")
+            timer.tick("publish_count_in_audio")
         self.audio = Stanza.align_stanzas(self.stanzas, self.error_code)
         if self.audio is False: return False
         timer.tick("align_stanzas")
@@ -354,21 +354,19 @@ class Audio:
         return AudioSegment.silent(duration=duration_ms, frame_rate=Const.sample_rate)
     @classmethod
     def create_count_in_audio(cls):
+        tick_interval = max(Const.tick_interval, Const.tick_duration)
         t = np.linspace(0, Const.tick_duration, int(Const.sample_rate * Const.tick_duration), endpoint=False)
         envelope = np.exp(-Const.tick_decay * t)
         tick = Const.tick_amplitude * envelope * np.sin(2 * np.pi * Const.tick_frequency * t)
         tick = tick.astype(np.float32)
-        silence_len = int(Const.sample_rate * Const.tick_interval) - len(tick)
-        if silence_len < 0: raise ValueError("Tick interval is shorter than tick duration")
-        silence = np.zeros(silence_len, dtype=np.float32)
+        silence = np.zeros(int(Const.sample_rate * tick_interval) - len(tick), dtype=np.float32)
         segments = []
         segments.append(silence)
         for _ in range(Const.num_ticks):
             segments.append(tick)
             segments.append(silence)
         count_in = np.concatenate(segments)
-        peak = np.max(np.abs(count_in))
-        if peak > 0: count_in = count_in / peak * 0.9
+        count_in = np.clip(count_in, -1.0, 1.0) # safety clip
         cls.count_in_audio = cls.numpy_to_audiosegment(count_in)
 
 class Mix:
