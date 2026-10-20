@@ -19,7 +19,7 @@ During development I am running the Collective Chant software on a local Linux b
 13. Open the main Collective Chant page in a browser on your remote system: https://fastapi.local
 
 ## `mix_worker.py`
-This is a standalone program which mixes `.webm` audio files found in the `uploads` directory; result saved to the `mixes` directory.
+This is a standalone program that mixes `.webm` audio files found in the `uploads` directory; result saved to the `mixes` directory.
 
 The only command line argument is `mix_id` and it is optional. After that mix is done, or if not given, the program
 starts polling the `mixes` directory for signal files of the form `<mix_id>.mix`. If any are found, a mix is started.
@@ -29,23 +29,25 @@ along with a `<mix_id>.json file` containing a dictionary of contributors to the
 Automatic Speech Recognition (ASR) is used to ensure that uploaded audios are faithful recitations of the reference chant.
 To avoid ASR degredation, audio blobs are split into stanzas that should be less than 30 seconds in duration,
 as determined by gaps of (near) silence between them. After splitting, stanzas are compressed/stretched
-to match a reference audio in `ref_path`, then transcribed using ASR and checked for accuracy relative to the reference text
+to match the reference audio at `ref_path`, then transcribed using ASR and checked for accuracy relative to the reference text
 in `stanzas_path` (which uses blank lines to separate stanzas), then reassembled with a predetermined gap of silence between
 them in preparation for the mix. The reference chant itself is split then reassembled with 3-tick count-ins between them
-to help chanters synchronize with the reference chant when recording and audio for upload, and stored in `ref_path_ticks`
+to help chanters synchronize with it when recording audio for upload, then stored in `ref_path_ticks`
 for use by `main.py`.
 
 ASR is done by the module `faster_whisper`, which automatically downloads and caches a model when `mix_worker.py` is first run.
 `mix_worker.py` can run as a service started manually or automatically at bootup by registering `mix_worker.service`
-with the system. Instructions are included as comments in the service file itself. This ensures that the very large
+with the system. Instructions are included as comments inside the service file itself. This ensures that the very large
 model is only loaded into memory once per session (not per mix).
 
 There are many constants in `mix_worker.py` which can be modified. Some that are more likely to be adjusted are:
 
-gap_threshold_ms = 1000        # minimum (near) silence gap in uploaded audio to qualify as a stanza boundary.
-min_speech_ms = 250            # discard nonsilent segments shorter than this when detecting silence gap.
-silence_thresh_offset = 15     # dBFS offset below overall level for silence detect.
-stanza_gap_ms = 1500           # gap of silence to be inserted between stanzas when reassembled.
-max_stanza_word_errors = 1     # if any single stanza exceeds this word error limit, the entire audio is rejected.
-ratio_tolerance = 0.1          # any stanza that must be stretched/compressed more than a factor of 1 +/- this value is silenced.
-max_stanza_duration_errors = 1 # if more than this number of stanzas are silenced, the entire audio is rejected.
+| Constant | Example Value | Comment |
+|----------|---------------|---------|
+|gap_threshold_ms | 1000 | minimum (near) silence gap in uploaded audio to qualify as a stanza boundary.|
+|min_speech_ms | 250 | overlook nonsilent segments shorter than this when detecting silence gap.|
+|silence_thresh_offset | 15 | dBFS offset below overall level for silence detect.|
+|stanza_gap_ms | 1500 | gap of silence to be inserted between stanzas when reassembled.|
+|max_stanza_word_errors | 1 | if any single stanza exceeds this word error limit, the entire audio is rejected.|
+|ratio_tolerance | 0.1 | any stanza that must be stretched/compressed more than a factor of 1 +/- this value is silenced.|
+|max_stanza_duration_errors | 1 | if more than this number of stanzas are silenced, the entire audio is rejected.|
