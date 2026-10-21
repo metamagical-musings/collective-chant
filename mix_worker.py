@@ -12,9 +12,9 @@ class Const:
     uploads_dir = "uploads"
     mixes_dir = "mixes"
     tmp_dir = "tmp"
-    ref_path = "static/ref_chant.webm"
-    ref_path_ticks = "static/ref_chant_ticks.webm"
-    ref_stanzas_path = "static/ref_stanzas.txt"
+    ref_path = "reference/ref_chant.webm"
+    ref_path_ticks = "reference/ref_chant_ticks.webm"
+    ref_stanzas_path = "reference/ref_stanzas.txt"
     stanza_tmp_dir = "tmp/chant_stanzas"
     # prepare_audio()
     ffmpeg_timeout = 60.0

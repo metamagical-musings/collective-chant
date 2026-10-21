@@ -1,5 +1,6 @@
 # collective-chant
-A website to facilitate a collective chant or prayer. Under development.
+A website to facilitate a collective chant or prayer.
+Under development: main.py is temporarily out of sync with mix_worker.py
 
 ## Installation
 During development I am running the Collective Chant software on a local Linux box, inside a Python virtual environment. The software uses the Python FastAPI module to serve web pages over my local network to a browser running on my Windows system. I edited my Windows `hosts` file so that I can use the URL https://fastapi.local to open the main page. To use HTTPS, certificate files were created and placed in the project directory, but a port other than 443 could have been used for testing so that a certificate would not be needed.
@@ -11,7 +12,7 @@ During development I am running the Collective Chant software on a local Linux b
 5. Inside this directory, create a virtual environment: `python3 -m venv .venv`
 6. Activate the venv: `source .venv/bin/activate`
 7. Install Python dependencies: `pip install -r requirements.txt`
-8. Place a reference audio (named ref_chant.webm by default) into the `static directory`. (Use a short, single-stanza chant for testing.)
+8. Place a reference audio (named ref_chant.webm by default) into the `reference` directory. (Use a short, single-stanza chant for testing.)
 9. Place its associated transcription (named ref_stanzas.txt by default) into the same directory. (See below about stanzas.)
 10. Start mix_worker.py: `python3 mix_worker.py test` (This should create `mixes/test.webm` using only the reference audio.)
 11. If using HTTPS, run: `sudo setcap 'cap_net_bind_service=+ep' $(readlink -f .venv/bin/python3)` (to allow binding to port 443)
