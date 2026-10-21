@@ -14,7 +14,7 @@ class Const:
     tmp_dir = "tmp"
     ref_path = "static/ref_chant.webm"
     ref_path_ticks = "static/ref_chant_ticks.webm"
-    stanzas_path = "static/stanzas.txt"
+    ref_stanzas_path = "static/ref_stanzas.txt"
     stanza_tmp_dir = "tmp/chant_stanzas"
     # prepare_audio()
     ffmpeg_timeout = 60.0
@@ -37,7 +37,8 @@ class Const:
     min_speech_ms = 250          # skip nonsilent segments shorter than this when detecting silence gap
     silence_thresh_offset = 15   # dBFS offset below overall level for silence detect
     seek_step_ms = 10            # resolution of silence detection
-    # score_stanzas()
+    # score_stanza()
+    save_stanzas = False         # True to save stanza results in tmp_dir during testing
     beam_size = 5
     temperature = 0.0
     word_timestamps = False
@@ -140,8 +141,8 @@ class Reference:
     stanza_durations_ms = []
     num_stanzas = 0
     @classmethod
-    def load_stanzas(cls, stanzas_path):
-        with open(stanzas_path, 'r', encoding='utf-8') as f:
+    def load_stanzas(cls, ref_stanzas_path):
+        with open(ref_stanzas_path, 'r', encoding='utf-8') as f:
             current_block = []
             for line in f:
                 line = line.rstrip()
@@ -179,10 +180,10 @@ class Stanza:
         return int(d[-1, -1])
     def score_stanza(self, tmp_dir, error_code):
         try:
-            wav_file = str(tmp_dir / f"stanza_{self.index}.wav")
-            self.audio.export(wav_file, format="wav")
+            wav_path = str(tmp_dir / f"stanza_{self.index}.wav")
+            self.audio.export(wav_path, format="wav")
             segments, info = Whisper.model.transcribe(
-                wav_file,
+                wav_path,
                 language="en",
                 beam_size=Const.beam_size,
                 temperature=Const.temperature,
@@ -223,7 +224,7 @@ class Stanza:
             if not stanza.score_stanza(tmp_dir, error_code):
                 passed = False
                 break
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+        if not Const.save_stanzas: shutil.rmtree(tmp_dir, ignore_errors=True)
         return passed
     @staticmethod
     def combine_stanzas(stanzas):
@@ -405,7 +406,7 @@ def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
 def main():
     Util.log("Collective Chant program", 1)
     timer = Timer()
-    Reference.load_stanzas(*Util.check_dirs_files(Const.stanzas_path))
+    Reference.load_stanzas(*Util.check_dirs_files(Const.ref_stanzas_path))
     Audio.create_count_in_audio()
     Whisper.load_model(Const.model_name)
     timer.tick("load_model")

@@ -1,3 +1,4 @@
+# main.py
 fastapi
 uvicorn[standard]
 pydantic
@@ -5,9 +6,11 @@ jinja2
 python-multipart
 streaming-form-data
 geoip2
+# mix_worker.py
 pydub
 audioop-lts
 faster_whisper
+av>=11,<19 # temporarily needed until faster_whisper catches up, or get faster-whisper directly from github
 pyrubberband
 soundfile
 numpy
