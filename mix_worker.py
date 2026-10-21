@@ -140,6 +140,7 @@ class Reference:
     words = []
     stanza_durations_ms = []
     num_stanzas = 0
+    ref_audio = None
     @classmethod
     def load_stanzas(cls, ref_stanzas_path):
         with open(ref_stanzas_path, 'r', encoding='utf-8') as f:
@@ -305,14 +306,14 @@ class Audio:
             Util.log(f"  REJECT: Detected {len(self.stanzas)} upload stanzas, expected {Reference.num_stanzas}", error_code)
             return False
         return True
-    def process(self, timer):
+    def process(self, timer, process_ref):
         if not self.prepare_audio(): return False
         timer.tick("prepare_audio")
         if not self.split_into_stanzas(): return False
         timer.tick("split_stanzas")
         if not Stanza.score_stanzas(self.stanzas, self.error_code): return False
         timer.tick("score_stanzas")
-        if len(Reference.stanza_durations_ms) == 0:
+        if process_ref:
             Reference.stanza_durations_ms = [len(stanza.audio) for stanza in self.stanzas]
             combined = Stanza.combine_stanzas(self.stanzas)
             timer.tick("combine_stanzas")
@@ -378,18 +379,19 @@ class Mix:
 def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
     def log_stats(path, audio):
         Util.log(f"  OK {path.name}  {round(len(audio) / 1000.0, 3)}s  {round(audio.dBFS, 2)}dBFS", 1)
-    Util.log(f"Start reference audio processing...", 1)
-    ref_audio = Audio(ref_path, 0).process(timer) # never returns False
-    log_stats(ref_path, ref_audio)
+    if Reference.ref_audio is None:
+        Util.log(f"Start reference audio processing...", 1)
+        Reference.ref_audio = Audio(ref_path, 0).process(timer, True) # never returns False
+        log_stats(ref_path, Reference.ref_audio)
     contributions = []
-    for _ in range(Const.num_ref_audio_in_mix): contributions.append(ref_audio)
+    for _ in range(Const.num_ref_audio_in_mix): contributions.append(Reference.ref_audio)
     Util.log(f"Starting processing of uploads for mix {mix_id}...", 1)
     uploads = Util.get_uploads(uploads_dir)
     Util.log(f"Found {len(uploads)} submitted file(s).", 1)
     contributors = []
     for path in uploads:
         Util.log(f"Processing {path.name}...", 1)
-        audio = Audio(path, 1).process(timer)
+        audio = Audio(path, 1).process(timer, False)
         if audio is False: continue
         contributions.append(audio)
         matches = re.compile(r"^([^.]+)\.([^.]+)\.(.+)\.webm$").match(path.name)
