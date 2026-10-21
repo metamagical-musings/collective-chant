@@ -19,31 +19,31 @@ During development I am running the Collective Chant software on a local Linux b
 13. Open the main Collective Chant page in a browser on your remote system: https://fastapi.local
 
 ## `mix_worker.py`
-This is a standalone program that mixes `.webm` audio files found in the `uploads` directory; result saved to the `mixes` directory.
+A standalone program that mixes `.webm` audio files found in the `uploads` directory; result saved to the `mixes` directory.
 
-The only command line argument is `mix_id` and it is optional. After that mix is done, or if not given, the program
+The only command line argument is `mix_id` and it is optional. After the initial mix is done, if requested, the program
 starts polling the `mixes` directory for signal files of the form `<mix_id>.mix`. If any are found, a mix is started.
 The signal file is removed and the resulting mix is placed in the same directory with the name `<mix_id>.webm`,
-along with a `<mix_id>.json file` containing a dictionary of contributors to the mix. Polling resumes.
+along with a `<mix_id>.json file` that contains a dictionary of contributors to the mix. Uploaded audio files are then
+removed. Polling resumes.
 
-Automatic Speech Recognition (ASR) is used to ensure that uploaded audios are faithful recitations of the reference chant.
-To avoid ASR degredation, audio blobs are split into stanzas that should be less than 30 seconds in duration,
+Automatic Speech Recognition (ASR) is used to ensure that uploaded audios are faithful recitations of a reference audio
+at `ref_path`. To avoid ASR degredation, audios are split into stanzas that should be less than 30 seconds in duration,
 as determined by gaps of (near) silence between them. After splitting, stanzas are compressed/stretched
-to match the reference audio at `ref_path`, then transcribed using ASR and checked for accuracy relative to the reference text
-in `stanzas_path` (which uses blank lines to separate stanzas), then reassembled with a predetermined gap of silence between
-them in preparation for the mix. The reference chant itself is split then reassembled with 3-tick count-ins between them
-to help chanters synchronize with it when recording audio for upload, then stored in `ref_path_ticks`
-for use by `main.py`.
+to match the reference audio, then transcribed using ASR and checked for accuracy relative to the reference text
+in `stanzas_path` (which uses blank lines to separate stanzas), then reassembled with a fixed gap of silence between
+them in preparation for the mix. The reference audio itself is split then reassembled with 3-tick count-ins between them
+(to help chanters synchronize with it when recording audio for upload), then stored in `ref_path_ticks` for use by `main.py`.
 
-ASR is done by the module `faster_whisper`, which automatically downloads and caches a model when `mix_worker.py` is first run.
-`mix_worker.py` can run as a service started manually or automatically at bootup by registering `mix_worker.service`
-with the system. Instructions are included as comments inside the service file itself. This ensures that the very large
-model is only loaded into memory once per session (not per mix).
+ASR is done by the module `faster_whisper`, which automatically downloads and caches a language model when `mix_worker.py`
+is first run. `mix_worker.py` can run as a service started manually or automatically at bootup by registering
+`mix_worker.service` with the system. Example commands are included as comments inside the service file itself. Making
+`mix_worker.py` a service ensures that the very large model is only loaded into memory once per session (not per mix).
 
-There are many constants in `mix_worker.py` which can be modified. Some that are more likely to be adjusted are:
+There are many tunable constants in `mix_worker.py`. Some that are more likely to be tuned are:
 
-| Constant | Example Value | Comment |
-|----------|---------------|---------|
+| Constant | Suggested | Comment |
+|----------|-----------|---------|
 |gap_threshold_ms | 1000 | minimum (near) silence gap in uploaded audio to qualify as a stanza boundary.|
 |min_speech_ms | 250 | overlook nonsilent segments shorter than this when detecting silence gap.|
 |silence_thresh_offset | 15 | dBFS offset below overall level for silence detect.|
@@ -51,3 +51,4 @@ There are many constants in `mix_worker.py` which can be modified. Some that are
 |max_stanza_word_errors | 1 | if any single stanza exceeds this word error limit, the entire audio is rejected.|
 |ratio_tolerance | 0.1 | any stanza that must be stretched/compressed more than a factor of 1 +/- this value is silenced.|
 |max_stanza_duration_errors | 1 | if more than this number of stanzas are silenced, the entire audio is rejected.|
+|num_ref_audio_in_mix | 1 | number of times to include the reference audio in the mix for stability.|

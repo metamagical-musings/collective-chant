@@ -46,16 +46,18 @@ class Const:
     log_prob_threshold = -1.0
     no_speech_threshold = 0.6
     vad_filter = True
-    max_stanza_word_errors = 1     # if any single stanza exceeds this word error limit, the entire audio is rejected.
+    max_stanza_word_errors = 1   # if any stanza exceeds this word error limit, the entire audio is rejected.
     # compute_ratio()
-    ratio_tolerance = 0.10         # any stanza that must be stretched/compressed more than a factor of 1 +/- this value is silenced.
+    ratio_tolerance = 0.10       # any stanza that must be stretched/compressed more than a factor of 1 +/- this value is silenced.
     # align_stanzas()
-    max_stanza_duration_errors = 1 # if more than this number of stanzas are silenced, the entire audio is rejected.
-    stanza_gap_ms = 1500           # gap of silence to be inserted between stanzas when reassembled
+    max_stanza_duration_errors = 1 # if this number silenced stanzas is exceeded, the entire audio is rejected.
+    stanza_gap_ms = 1500         # gap of silence to be inserted between stanzas when reassembled
     # Whisper.load_model()
     device = "cpu"
     compute_type = "int8"
-    model_name = "base.en"
+    model_name = "base.en"       # alternatives: tiny.en, base.en, small.en, or drop .en
+    # run()
+    num_ref_audio_in_mix = 1
 
 class Timer:
     def __init__(self):
@@ -90,12 +92,6 @@ class Util:
             Util.log(f"  REJECT: {ratio:.2f} duration ratio exceeds allowed tolerance {Const.ratio_tolerance}", error_code)
             return False
         return ratio
-    @staticmethod
-    def normalize_to_target(audio):
-        if audio.max_dBFS <= -180: return audio # digital silence
-        return audio.apply_gain(min(Const.target_db - audio.dBFS, -Const.headroom_db - audio.max_dBFS))
-
-class FS:
     @staticmethod
     def check_dirs_files(*dfs):
         df_paths = []
@@ -311,8 +307,6 @@ class Audio:
     def process(self, timer):
         if not self.prepare_audio(): return False
         timer.tick("prepare_audio")
-        self.audio = Util.normalize_to_target(self.audio)
-        timer.tick("normalize_audio")
         if not self.split_into_stanzas(): return False
         timer.tick("split_stanzas")
         if not Stanza.score_stanzas(self.stanzas, self.error_code): return False
@@ -321,12 +315,16 @@ class Audio:
             Reference.stanza_durations_ms = [len(stanza.audio) for stanza in self.stanzas]
             combined = Stanza.combine_stanzas(self.stanzas)
             timer.tick("combine_stanzas")
-            FS.write_audio_atomic(combined, Path(Const.ref_path_ticks))
+            Util.write_audio_atomic(combined, Path(Const.ref_path_ticks))
             timer.tick("publish_count_in_audio")
         self.audio = Stanza.align_stanzas(self.stanzas, self.error_code)
         if self.audio is False: return False
         timer.tick("align_stanzas")
         return self.audio
+    @staticmethod
+    def normalize_to_target(audio):
+        if audio.max_dBFS <= -180: return audio # digital silence
+        return audio.apply_gain(min(Const.target_db - audio.dBFS, -Const.headroom_db - audio.max_dBFS))
     @staticmethod
     def numpy_to_audiosegment(samples):
         """Convert mono float32 array in [-1, 1] to a pydub AudioSegment."""
@@ -367,12 +365,12 @@ class Mix:
     def process(self, mix_id, mixes_dir, timer):
         self.equal_gain_mix()
         timer.tick("mix_audio")
-        self.mixed_audio = Util.normalize_to_target(self.mixed_audio)
+        self.mixed_audio = Audio.normalize_to_target(self.mixed_audio)
         timer.tick("normalize_audio")
         mixed_audio_path = mixes_dir / f"{mix_id}.webm"
-        FS.write_audio_atomic(self.mixed_audio, mixed_audio_path)
+        Util.write_audio_atomic(self.mixed_audio, mixed_audio_path)
         timer.tick("publish_audio")
-        FS.write_json_atomic(self.contributors, mixes_dir / f"{mix_id}.json")
+        Util.write_json_atomic(self.contributors, mixes_dir / f"{mix_id}.json")
         timer.tick("publish_json")
         return mixed_audio_path, self.mixed_audio
 
@@ -383,9 +381,9 @@ def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
     ref_audio = Audio(ref_path, 0).process(timer) # never returns False
     log_stats(ref_path, ref_audio)
     contributions = []
-    contributions.append(ref_audio) # append reference multiple times?
+    for _ in range(Const.num_ref_audio_in_mix): contributions.append(ref_audio)
     Util.log(f"Starting processing of uploads for mix {mix_id}...", 1)
-    uploads = FS.get_uploads(uploads_dir)
+    uploads = Util.get_uploads(uploads_dir)
     Util.log(f"Found {len(uploads)} submitted file(s).", 1)
     contributors = []
     for path in uploads:
@@ -407,17 +405,17 @@ def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
 def main():
     Util.log("Collective Chant program", 1)
     timer = Timer()
-    Reference.load_stanzas(*FS.check_dirs_files(Const.stanzas_path))
+    Reference.load_stanzas(*Util.check_dirs_files(Const.stanzas_path))
     Audio.create_count_in_audio()
     Whisper.load_model(Const.model_name)
     timer.tick("load_model")
-    uploads_dir, mixes_dir, ref_path, tmp_dir = FS.check_dirs_files(Const.uploads_dir, Const.mixes_dir, Const.ref_path, Const.tmp_dir)
+    uploads_dir, mixes_dir, ref_path, tmp_dir = Util.check_dirs_files(Const.uploads_dir, Const.mixes_dir, Const.ref_path, Const.tmp_dir)
     try:
         while True:
             if len(sys.argv) > 1:
                 mix_id = sys.argv[1] # optional one-time command line mix request to be followed by polling
                 sys.argv = [sys.argv[0]]
-            else: mix_id = FS.get_mix_signal(*FS.check_dirs_files(Const.mixes_dir))
+            else: mix_id = Util.get_mix_signal(*Util.check_dirs_files(Const.mixes_dir))
             if not mix_id:
                 time.sleep(2)
                 continue
