@@ -8,7 +8,7 @@ from faster_whisper import WhisperModel
 from io import BytesIO
 
 class Const:
-    error_level = 3 # 0==FATAL, 1==COURSE, 2==FINE, 3==TIMING
+    error_level = 1 # 0==FATAL, 1==COURSE, 2==FINE, 3==TIMING
     uploads_dir = "uploads"
     mixes_dir = "mixes"
     tmp_dir = "tmp"
@@ -33,12 +33,12 @@ class Const:
     target_db = -14.0
     bitrate = "24k" # bps
     # split_into_stanzas()
-    gap_threshold_ms = 1000      # minimum silence gap to qualify as a stanza boundary
-    min_speech_ms = 250          # skip nonsilent segments shorter than this when detecting silence gap
-    silence_thresh_offset = 15   # dBFS offset below overall level for silence detect
-    seek_step_ms = 10            # resolution of silence detection
+    min_gap_ms = 1000              # minimum silence gap to qualify as a stanza boundary
+    min_speech_ms = 250            # skip nonsilent segments shorter than this when detecting silence gap
+    silence_threshold_offset = 15  # dBFS offset below overall level for silence detect
+    seek_step_ms = 10              # resolution of silence detection
     # score_stanza()
-    save_stanzas = False         # True to save stanza results in tmp_dir during testing
+    save_stanzas = False           # True to save stanza results in tmp_dir during testing
     beam_size = 5
     temperature = 0.0
     word_timestamps = False
@@ -47,16 +47,16 @@ class Const:
     log_prob_threshold = -1.0
     no_speech_threshold = 0.6
     vad_filter = True
-    max_stanza_word_errors = 1   # if any stanza exceeds this word error limit, the entire audio is rejected.
+    max_stanza_word_errors = 1     # if any stanza exceeds this word error limit, the entire audio is rejected
     # compute_ratio()
-    ratio_tolerance = 0.10       # any stanza that must be stretched/compressed more than a factor of 1 +/- this value is silenced.
+    ratio_tolerance = 0.10         # stanzas that must be stretched/compressed more than a factor of 1 +/- this value are silenced
     # align_stanzas()
-    max_stanza_duration_errors = 1 # if this number silenced stanzas is exceeded, the entire audio is rejected.
-    stanza_gap_ms = 1500         # gap of silence to be inserted between stanzas when reassembled
+    max_stanza_duration_errors = 1 # if this number silenced stanzas is exceeded, the entire audio is rejected
+    stanza_gap_ms = 1500           # gap of silence to be inserted between stanzas when reassembled
     # Whisper.load_model()
     device = "cpu"
     compute_type = "int8"
-    model_name = "base.en"       # alternatives: tiny.en, base.en, small.en, or drop .en
+    model_name = "base.en"         # alternatives: tiny.en, base.en, small.en, or drop .en
     # run()
     num_ref_audio_in_mix = 1
 
@@ -282,20 +282,20 @@ class Audio:
         self.audio = audio.set_frame_rate(Const.sample_rate).set_channels(1).set_sample_width(2)
         return True
     def split_into_stanzas(self):
-        silence_thresh = self.audio.dBFS - Const.silence_thresh_offset
+        silence_thresh = self.audio.dBFS - Const.silence_threshold_offset
         nonsilent = silence.detect_nonsilent(self.audio, min_silence_len=Const.seek_step_ms, silence_thresh=silence_thresh, seek_step=Const.seek_step_ms)
         # Filter out short noise artifacts within silence regions.
         real_speech = [(s, e) for s, e in nonsilent if (e - s) >= Const.min_speech_ms]
         if not real_speech:
             Util.log(f"  REJECT {self.path.name}: stanzas split failed (No speech detected)", self.error_code)
             return False
-        # Group speech regions into stanzas: a new stanza starts when the gap before it exceeds Const.gap_threshold_ms.
+        # Group speech regions into stanzas: a new stanza starts when the gap before it exceeds Const.min_gap_ms.
         stanzas = [[real_speech[0]]]
         for i in range(1, len(real_speech)):
             prev_end = real_speech[i - 1][1]
             curr_start = real_speech[i][0]
             gap = curr_start - prev_end
-            if gap >= Const.gap_threshold_ms: stanzas.append([real_speech[i]])
+            if gap >= Const.min_gap_ms: stanzas.append([real_speech[i]])
             else: stanzas[-1].append(real_speech[i])
         for idx, regions in enumerate(stanzas):
             start_ms = regions[0][0]
