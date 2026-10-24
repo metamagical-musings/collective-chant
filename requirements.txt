@@ -1,9 +1,9 @@
 # main.py
 fastapi
 uvicorn[standard]
-pydantic
+#pydantic
 jinja2
-python-multipart
+#python-multipart
 streaming-form-data
 geoip2
 # mix_worker.py

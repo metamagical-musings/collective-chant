@@ -31,7 +31,9 @@ class Const:
     uploads_per_mix = 2
     max_upload_size = 10 * 1024 * 1024
     max_queue_size = 100
-    ref_chant = "ref_chant.webm"
+    ref_audio_path = "reference/chant.webm"
+    ref_ticks_path = "reference/chant_ticks.webm"
+    ref_stanzas_path = "reference/chant_stanzas.txt"
     word_list = "bip39_english.txt"
 
 class GetCurrent:
@@ -99,10 +101,10 @@ class Mix:
         await socket.broadcast("json", {"type": "mix_contributors", "contributors": contributors})
 
 class Chant:
-    ref_chant = None
+    ref_audio = None
     @staticmethod
-    def load_ref_chant():
-        with open(f"static/{Const.ref_chant}", "rb") as f: Chant.ref_chant = f.read()
+    def load_ref_audio():
+        with open(f"{Const.ref_audio_path}", "rb") as f: Chant.ref_audio = f.read()
 
 class WS:
     def __init__(self):
@@ -218,7 +220,7 @@ app.add_middleware(CORSMiddleware, allow_methods=["*"], allow_headers=["*"], all
     allow_origins=["null", "http://localhost", "http://127.0.0.1", "http://192.168.18.56", "http://192.168.18.*"])
 templates = Jinja2Templates(directory="templates")
 app.mount("/static", StaticFiles(directory="static"), name="static")
-Chant.load_ref_chant()
+Chant.load_ref_audio()
 wordlist = BIP39WordList()
 socket = WS()
 token_store = TokenState()
@@ -303,7 +305,7 @@ async def websocket_endpoint(websocket: WebSocket):
         log(f"Client #{client_id} connected.", 2, "[WS]")
         now = time.time() # float
         await websocket.send_json({"type": "sync", "client_id": client_id, "now": now})
-        await socket.broadcast("bytes", Chant.ref_chant, client_id)
+        await socket.broadcast("bytes", Chant.ref_audio, client_id)
         async def sender():
             while True:
                 try:
