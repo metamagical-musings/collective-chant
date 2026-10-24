@@ -8,13 +8,14 @@ from faster_whisper import WhisperModel
 from io import BytesIO
 
 class Const:
-    error_level = 1 # 0==FATAL, 1==COURSE, 2==FINE, 3==TIMING
+    error_level = 3 # 0==FATAL, 1==COURSE, 2==FINE, 3==TIMING
     uploads_dir = "uploads"
     mixes_dir = "mixes"
     tmp_dir = "tmp"
-    ref_path = "reference/ref_chant.webm"
-    ref_path_ticks = "reference/ref_chant_ticks.webm"
-    ref_stanzas_path = "reference/ref_stanzas.txt"
+    ref_orig_path = "reference/chant.mp3"
+    ref_audio_path = "reference/chant.webm"
+    ref_ticks_path = "reference/chant_ticks.webm"
+    ref_stanzas_path = "reference/chant_stanzas.txt"
     stanza_tmp_dir = "tmp/chant_stanzas"
     # prepare_audio()
     ffmpeg_timeout = 60.0
@@ -85,6 +86,9 @@ class Util:
         if level > Const.error_level: return
         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}")
         if level == 0: sys.exit(1)
+    @staticmethod
+    def log_stats(path, audio):
+        Util.log(f"  OK {path.name}  {round(len(audio) / 1000.0, 3)}s  {round(audio.dBFS, 2)}dBFS", 1)
     @staticmethod
     def compute_ratio(duration_ms, ref_duration_ms, error_code):
         if duration_ms == 0 or ref_duration_ms == 0: return False
@@ -228,9 +232,15 @@ class Stanza:
         if not Const.save_stanzas: shutil.rmtree(tmp_dir, ignore_errors=True)
         return passed
     @staticmethod
-    def combine_stanzas(stanzas):
-        combined = AudioSegment.empty()
-        for seg in stanzas: combined += Audio.count_in_audio + seg.audio
+    def combine_stanzas(stanzas, ticks):
+        silence = Audio.create_silence(Const.stanza_gap_ms)
+        if ticks:
+            combined = silence
+            gap = Audio.count_in_audio
+        else:
+            combined = AudioSegment.empty()
+            gap = silence
+        for seg in stanzas: combined += gap + seg.audio
         return combined
     @staticmethod
     def align_stanzas(up_stanzas, error_code):
@@ -315,9 +325,13 @@ class Audio:
         timer.tick("score_stanzas")
         if process_ref:
             Reference.stanza_durations_ms = [len(stanza.audio) for stanza in self.stanzas]
-            combined = Stanza.combine_stanzas(self.stanzas)
-            timer.tick("combine_stanzas")
-            Util.write_audio_atomic(combined, Path(Const.ref_path_ticks))
+            combined = Stanza.combine_stanzas(self.stanzas, False)
+            timer.tick("combine_stanzas_silence")
+            Util.write_audio_atomic(combined, Path(Const.ref_audio_path))
+            timer.tick("publish_ref_audio")
+            combined = Stanza.combine_stanzas(self.stanzas, True)
+            timer.tick("combine_stanzas_ticks")
+            Util.write_audio_atomic(combined, Path(Const.ref_ticks_path))
             timer.tick("publish_count_in_audio")
         self.audio = Stanza.align_stanzas(self.stanzas, self.error_code)
         if self.audio is False: return False
@@ -376,13 +390,7 @@ class Mix:
         timer.tick("publish_json")
         return mixed_audio_path, self.mixed_audio
 
-def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
-    def log_stats(path, audio):
-        Util.log(f"  OK {path.name}  {round(len(audio) / 1000.0, 3)}s  {round(audio.dBFS, 2)}dBFS", 1)
-    if Reference.ref_audio is None:
-        Util.log(f"Start reference audio processing...", 1)
-        Reference.ref_audio = Audio(ref_path, 0).process(timer, True) # never returns False
-        log_stats(ref_path, Reference.ref_audio)
+def run(mix_id, uploads_dir, mixes_dir, timer):
     contributions = []
     for _ in range(Const.num_ref_audio_in_mix): contributions.append(Reference.ref_audio)
     Util.log(f"Starting processing of uploads for mix {mix_id}...", 1)
@@ -398,10 +406,10 @@ def run(mix_id, uploads_dir, mixes_dir, ref_path, timer):
         if matches: md5, token, ip = matches.groups()
         else: token, ip = "token", "ip" # for testing
         contributors.append({token: ip})
-        log_stats(path, audio)
+        Util.log_stats(path, audio)
     timer.tick("all_uploads")
     Util.log(f"Mixing {len(contributions)} accepted contributions...", 1)
-    log_stats(*Mix(contributions, contributors).process(mix_id, mixes_dir, timer))
+    Util.log_stats(*Mix(contributions, contributors).process(mix_id, mixes_dir, timer))
     # Util.delete_uploads(uploads)
     timer.report()
 
@@ -412,7 +420,10 @@ def main():
     Audio.create_count_in_audio()
     Whisper.load_model(Const.model_name)
     timer.tick("load_model")
-    uploads_dir, mixes_dir, ref_path, tmp_dir = Util.check_dirs_files(Const.uploads_dir, Const.mixes_dir, Const.ref_path, Const.tmp_dir)
+    Util.log(f"Start reference audio processing...", 1)
+    Reference.ref_audio = Audio(*Util.check_dirs_files(Const.ref_orig_path), 0).process(timer, True) # never returns False
+    Util.log_stats(Path(Const.ref_orig_path), Reference.ref_audio)
+    uploads_dir, mixes_dir, tmp_dir = Util.check_dirs_files(Const.uploads_dir, Const.mixes_dir, Const.tmp_dir)
     try:
         while True:
             if len(sys.argv) > 1:
@@ -423,7 +434,7 @@ def main():
                 time.sleep(2)
                 continue
             Util.log(f"Processing mix {mix_id}...", 1)
-            run(mix_id, uploads_dir, mixes_dir, ref_path, timer)
+            run(mix_id, uploads_dir, mixes_dir, timer)
     except KeyboardInterrupt:
         Util.log("Program terminated by user.", 1)
         return

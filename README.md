@@ -1,6 +1,6 @@
 # collective-chant
 A website to facilitate a collective chant or prayer.
-Under development: main.py is temporarily out of sync with mix_worker.py
+Under development
 
 ## Installation
 During development I am running the Collective Chant software on a local Linux box, inside a Python virtual environment. The software uses the Python FastAPI module to serve web pages over my local network to a browser running on my Windows system. I edited my Windows `hosts` file so that I can use the URL https://fastapi.local to open the main page. To use HTTPS, certificate files were created and placed in the project directory, but a port other than 443 could have been used for testing so that a certificate would not be needed.
@@ -13,8 +13,8 @@ During development I am running the Collective Chant software on a local Linux b
 5. Inside this directory, create a virtual environment: `python3 -m venv .venv`
 6. Activate the venv: `source .venv/bin/activate`
 7. Install Python dependencies: `pip install -r requirements.txt`
-8. Place a reference audio (named ref_chant.webm by default) into the `reference` directory. (Use a short, single-stanza chant for testing.)
-9. Place its associated transcription (named ref_stanzas.txt by default) into the same directory. (See below about stanzas.)
+8. Place a reference audio (named chant.mp3 by default) into the `reference` directory. (Use a short, single-stanza chant for testing.)
+9. Place its associated transcription (named chant_stanzas.txt by default) into the same directory. (See below about stanzas.)
 10. Start mix_worker.py: `python3 mix_worker.py test` (This should create `mixes/test.webm` using only the reference audio.)
 11. If using HTTPS, run: `sudo setcap 'cap_net_bind_service=+ep' $(readlink -f .venv/bin/python3)` (to allow binding to port 443)
 12. If using HTTPS, create a certificate using mkcert, for example, and place fastapi.crt, fastapi.key, fastapi.pfx in the project directory.
@@ -43,13 +43,16 @@ along with a `<mix_id>.json` file that contains a dictionary of contributors to 
 removed. Polling resumes.
 
 Automatic Speech Recognition (ASR) is used to ensure that uploaded audios are faithful recitations of the reference audio
-at `ref_path`. To avoid ASR degredation, audios are split into stanzas that should be less than 30 seconds in duration,
+at `ref_orig_path`. To avoid ASR degredation, audios are split into stanzas that should be less than 30 seconds in duration,
 as determined by gaps of (near) silence between them. After splitting, stanzas are compressed/stretched
 to match the reference audio, then transcribed using ASR and checked for accuracy relative to the reference text
 in `ref_stanzas_path` (which uses blank lines to separate stanzas -- the number of which must match the number found
 by splitting the audio), then reassembled with a fixed gap of silence between them in preparation for the mix.
-The reference audio itself is split then reassembled with 3-tick count-ins between them (to help chanters synchronize
-with it when recording audios for upload), then stored in `ref_path_ticks` for use by `main.py`.
+
+When `mix_worker.py` starts, the original reference audio `ref_orig_path` (which can be any type recognized by ffmpeg,
+such as *.mp3 or *.webm) is split then reassembled with both fixed silence gaps between stanzas and with 3-tick count-ins
+between them (to help chanters synchronize with it when recording audios for upload). The former is stored in
+`ref_audio_path` and the latter is stored in `ref_ticks_path`, both for use by `main.py`.
 
 ASR is done by the module `faster_whisper`, which automatically downloads from HuggingFace and caches a language model
 when `mix_worker.py` is first run. (There will be an extra delay during the first run and a warning if you do not have
