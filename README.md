@@ -1,6 +1,6 @@
 # collective-chant
 A website to facilitate a collective chant or prayer.
-Under development
+Under development.
 
 ## Installation
 During development I am running the Collective Chant software on a local Linux box, inside a Python virtual environment. The software uses the Python FastAPI module to serve web pages over my local network to a browser running on my Windows system. I edited my Windows `hosts` file so that I can use the URL https://fastapi.local to open the main page. To use HTTPS, certificate files were created and placed in the project directory, but a port other than 443 could have been used for testing so that a certificate would not be needed.
@@ -21,8 +21,8 @@ During development I am running the Collective Chant software on a local Linux b
 13. In a separate terminal, start the main program (optionally using the `screen` program to allow for disconnection): `python3 main.py`
 
 ### On the remote system:
-1. Add a line like **xxx.xxx.xxx.xxx fastapi.local**  to the `hosts` file, in admin/superuser mode.
-2. Open the main Collective Chant page in a browser on your remote system: https://fastapi.local
+1. Add a line like `xxx.xxx.xxx.xxx fastapi.local` to the `hosts` file, in admin/superuser mode.
+2. Open the main Collective Chant page in a browser: https://fastapi.local
 
 ## Software
 
@@ -46,7 +46,7 @@ Automatic Speech Recognition (ASR) is used to ensure that uploaded audios are fa
 at `ref_orig_path`. To avoid ASR degredation, audios are split into stanzas that should be less than 30 seconds in duration,
 as determined by gaps of (near) silence between them. After splitting, stanzas are compressed/stretched
 to match the reference audio, then transcribed using ASR and checked for accuracy relative to the reference text
-in `ref_stanzas_path` (which uses blank lines to separate stanzas -- the number of which must match the number found
+in `ref_stanzas_path` (which uses blank lines to separate stanzas — the number of which must match the number found
 by splitting the audio), then reassembled with a fixed gap of silence between them in preparation for the mix.
 
 When `mix_worker.py` starts, the original reference audio `ref_orig_path` (which can be any type recognized by ffmpeg,
@@ -56,21 +56,21 @@ between them (to help chanters synchronize with it when recording audios for upl
 
 ASR is done by the module `faster_whisper`, which automatically downloads from HuggingFace and caches a language model
 when `mix_worker.py` is first run. (There will be an extra delay during the first run and a warning if you do not have
-a HuggingFace account -- just ignore it.) `mix_worker.py` can run as a service started manually or automatically at
+a HuggingFace account — just ignore it.) `mix_worker.py` can run as a service started manually or automatically at
 bootup by registering `mix_worker.service` with the system. Example commands are included as comments inside the service
 file itself. Making `mix_worker.py` a service ensures that the very large language model is only loaded into memory once
 per session (and not per mix).
 
-For best ASR performance -- and best mix results -- correctly pronounce and clearly enunciate recorded words in a
+For best ASR performance — and best mix results — correctly pronounce and clearly enunciate recorded words in a
 quiet environment while avoiding touching your computer or other recording device while chanting.
 
 There are many tunable constants in the `Const` object of `mix_worker.py`. Some pertaining to stanzas are:
 
 | Constant | Suggested | Comment |
-|----------|-----------|---------|
+|----------|:---------:|---------|
 |min_gap_ms | 1000 | Minimum (near) silence gap in uploaded audio to qualify as a stanza boundary.|
 |min_speech_ms | 250 | Overlook nonsilent segments shorter than this when detecting silence gap.|
-|silence_threshold_offset | 15 | dBFS offset below overall level for silence detect.|
+|silence_threshold_offset | 15 | dBFS offset below overall level for silence detection.|
 |stanza_gap_ms | 1500 | Gap of silence to be inserted between stanzas when reassembled.|
 |max_stanza_word_errors | 1 | If any single stanza exceeds this word error limit, the entire audio is rejected.|
 |ratio_tolerance | 0.1 | Stanzas that must be stretched/compressed more than a factor of 1 +/- this value are silenced.|
