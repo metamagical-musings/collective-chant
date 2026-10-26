@@ -411,7 +411,7 @@ def run(mix_id, uploads_dir, mixes_dir, timer):
     timer.tick("all_uploads")
     Util.log(f"Mixing {len(contributions)} accepted contributions...", 1)
     Util.log_stats(*Mix(contributions, contributors).process(mix_id, mixes_dir, timer))
-    # Util.delete_uploads(uploads)
+    Util.delete_uploads(uploads)
     timer.report()
 
 def main():
@@ -435,7 +435,7 @@ def main():
                 time.sleep(2)
                 continue
             Util.log(f"Processing mix {mix_id}...", 1)
-            run(mix_id, uploads_dir, mixes_dir, timer)
+            run(mix_id, uploads_dir, mixes_dir, Timer())
     except KeyboardInterrupt:
         Util.log("Program terminated by user.", 1)
         return

@@ -295,7 +295,7 @@ h1 {
 }
 .token-item.contributor {
     background: rgba(255, 212, 59, 0.1);
-    border-left-color: var(--warning-color);
+    border-left-color: var(--success-color);
 }
 .token-value {
     font-family: monospace;

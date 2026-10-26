@@ -68,26 +68,18 @@
         </div>
         <div class="two-column-layout">
             <div class="uniform-section">
+                <h2 class="section-title">Notifications</h2>
+                <div class="list-container" id="status-messages">
+                    <div class="status-item status-info">
+                        Connecting to server...
+                    </div>
+                </div>
+            </div>
+            <div class="uniform-section">
                 <h2 class="section-title">Available Upload Tokens</h2>
                 <div class="list-container" id="tokens-list">
                     <div class="token-item token-info">
                         Waiting for tokens...
-                    </div>
-                </div>
-            </div>
-            <div class="uniform-section">
-                <h2 class="section-title">Chant Mix Contributors</h2>
-                <div class="list-container" id="contributors-list">
-                    <div class="token-item token-info">
-                        Waiting for chant mix...
-                    </div>
-                </div>
-            </div>
-            <div class="uniform-section">
-                <h2 class="section-title">Status & Notifications</h2>
-                <div class="list-container" id="status-messages">
-                    <div class="status-item status-info">
-                        Connecting to server...
                     </div>
                 </div>
             </div>
@@ -105,7 +97,7 @@
                             <li>Press the <i>Start</i> button to begin recording at the beginning of the next chant.</li>
                             <li>During live recording, the original reference chant is played rather than the collective chant mixed from uploads, so that you can synchronize your voice with it.</li>
                             <li>Recording stops automatically after <span id="slot-duration-val-2">0</span>s, which is a few seconds longer than the chant, if not stopped before then by clicking the <i>Stop</i> button.</li>
-                            <li>Allow live recording to continue until it stops automatically, maintaining silence after the reference chant ends, to ensure inclusion in the next mix. (The uploaded recording must have a time duration within <span id="tolerance-val">&nbsp;</span>s of the full chant cycle time to help filter out invalid recordings.)</li>
+                            <li>Allow live recording to continue until it stops automatically, maintaining silence after the reference chant ends, to ensure inclusion in the next mix. The uploaded recording's time duration must not exceed <span id="slot-duration-val-3">&nbsp;</span>s to help filter out invalid recordings.</li>
                             </ul>
                         </div>
                     </p>
@@ -119,8 +111,16 @@
                         <strong>Available Tokens:</strong> A token is required to upload. One may be granted at the beginning of each chant cycle depending on demand; they expire in <span id="rec-slot-duration">&nbsp;</span>s if not used.
                     </p>
                     <p>
-                        <strong>Chant Mix Contributors:</strong> A list of tokens corresponding to uploaded recordings included in the currently playing chant mix. Contributions by you have a yellow left-border.
+                        <strong>Chant Mix Contributors:</strong> A list of tokens included in the currently playing chant mix. Contributions by you have a green left-border.
                     </p>
+                </div>
+            </div>
+            <div class="uniform-section">
+                <h2 class="section-title">Chant Mix Contributors</h2>
+                <div class="list-container" id="contributors-list">
+                    <div class="token-item token-info">
+                        Waiting for chant mix...
+                    </div>
                 </div>
             </div>
         </div>
@@ -130,7 +130,6 @@
             time_slot_duration_sec: {{ time_slot_duration_sec }},
             rec_slot_duration_sec: {{ rec_slot_duration_sec }},
             uploads_per_mix: {{ uploads_per_mix }},
-            rec_tolerance_sec: {{ rec_tolerance_sec }},
             max_upload_size: {{ max_upload_size }},
             start_window: 15,
             expiration_zone: 5
@@ -156,14 +155,15 @@
         let localURL = null;
         let activeTokens = []; // Array of { token, expires_at }
         let currentContributors = {}; // Array of { token, country_code }
+        let currentMixId = null;
         const els = {
             chantingStatusText: document.getElementById('chanting-status-text'),
             timeSlotRemaining: document.getElementById('time_slot_remaining'),
             uploadsPerMix: document.getElementById('uploads_per_mix'),
             uploadCount: document.getElementById('upload_count'),
-            toleranceVal: document.getElementById('tolerance-val'),
             slotDurationVal1: document.getElementById('slot-duration-val-1'),
             slotDurationVal2: document.getElementById('slot-duration-val-2'),
+            slotDurationVal3: document.getElementById('slot-duration-val-3'),
             recSlotDuration: document.getElementById('rec-slot-duration'),
             recordingIndicator: document.getElementById('recording-indicator'),
             recordingStatusText: document.getElementById('recording-status-text'),
@@ -187,9 +187,9 @@
         }
         function initDisplay() {
             els.uploadsPerMix.textContent = config.uploads_per_mix;
-            els.toleranceVal.textContent = config.rec_tolerance_sec;
             els.slotDurationVal1.textContent = config.time_slot_duration_sec;
             els.slotDurationVal2.textContent = config.time_slot_duration_sec;
+            els.slotDurationVal3.textContent = config.time_slot_duration_sec;
             els.recSlotDuration.textContent = config.rec_slot_duration_sec;
         }
         function getIntUnixTime() {
@@ -217,7 +217,11 @@
                     }
                     else els.chantingStatusText.textContent = `Chant starts in ${times.timeSlotRemaining}s unless muted.`;
                 }
-                else  els.chantingStatusText.textContent = `New chant mix follows ${config.uploads_per_mix} global recording uploads.`;
+                else {
+                    currentMix = currentMixId;
+                    if (currentMixId === null) currentMix = 'reference chant'
+                    els.chantingStatusText.textContent = `New chant mix follows ${config.uploads_per_mix} global recording uploads. Current mix: ${currentMix}`;
+                }
             }
             isWindow = times.timeSlotRemaining <= config.start_window;
             isntToken = activeTokens.length === 0;
@@ -356,7 +360,11 @@
                 case 'upload_count':
                     uploadCount = data.upload_count;
                     break;
+                case 'mix_initiation':
+                    addStatusMessage(`Mix ${data.mix_id} initiated...`, 'info');
+                    break;
                 case 'mix_contributors':
+                    currentMixId = data.mix_id;
                     currentContributors = Object.fromEntries(data.contributors.flatMap(obj => Object.entries(obj)).sort(([a], [b]) => a.localeCompare(b)));
                     break;
                 case 'error':
@@ -377,7 +385,7 @@
                 addStatusMessage(`Reference chant dowloaded: ${convertToMB(blob.size)}.`, 'success');
                 updateDisplay();
             }
-            else addStatusMessage(`Mix chant dowloaded: ${convertToMB(blob.size)}.`, 'success');
+            else addStatusMessage(`Mix chant ${currentMixId} dowloaded: ${convertToMB(blob.size)}.`, 'success');
             mixChantURL = URL.createObjectURL(blob);
         }
         function checkAudioSupport() {
@@ -392,7 +400,8 @@
             els.chantAudioPlayer.src = url;
             els.chantAudioPlayer.load();
             els.chantAudioPlayer.play().catch((e) => {
-                isChanting = false;
+                console.error(e.name)
+                if (e.name === 'AbortError') return; // Ignore power-saving pause; resume will be handled by visibilitychange
                 addStatusMessage(`Audio player error: ${e}.`, 'error');
              });
              updateDisplay();
@@ -438,11 +447,9 @@
                 isUploading = false;
                 updateDisplay();
             }
-            addStatusMessage('Checking duration...', 'info');
             const duration_sec = await getDuration(blob);
-            const delta_sec = Math.abs(duration_sec - config.time_slot_duration_sec);
-            if (delta_sec > config.rec_tolerance_sec) {
-                addStatusMessage(`Audio duration out of tolerance by: ${delta_sec.toFixed(1)}s.`)
+            if (duration_sec > config.time_slot_duration_sec) {
+                addStatusMessage(`Upload failed, audio duration exceeds: ${config.time_slot_duration_sec}s.`, 'error')
                 done();
                 return;
             }
@@ -584,6 +591,11 @@
                 update();
                 setInterval(update, 1000);
             }, delay);
+        });
+        document.addEventListener('visibilitychange', () => {
+          if (document.visibilityState === 'visible' && els.chantAudioPlayer.paused && isChanting) {
+            els.chantAudioPlayer.play().catch(() => {});
+          }
         });
         document.addEventListener('click', () => {
             isClicked = true;

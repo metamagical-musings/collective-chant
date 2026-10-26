@@ -20,17 +20,16 @@ import geoip2.errors
 class Const:
     error_level = 2 # 0==FATAL, 1==COURSE, 2==FINE
     words_per_token = 3
-    time_slot_duration_sec = 60 # sec
+    time_slot_duration_sec = 60
     rec_slots_per_time_slot = 1.5 # float
     rec_slot_lifespan = 6 # number of time_slots
     rec_slot_duration_sec = rec_slot_lifespan * time_slot_duration_sec
-    rec_tolerance_sec = 30
-    uploads_dir = "uploads"
-    mixes_dir = "mixes"
     mix_timeout = 300
     uploads_per_mix = 2
     max_upload_size = 10 * 1024 * 1024
     max_queue_size = 100
+    uploads_dir = "uploads"
+    mixes_dir = "mixes"
     word_list = "static/bip39_english.txt"
     flags_dir = "static/flags"
     countries_db = "static/GeoLite2-Country.mmdb"
@@ -57,10 +56,12 @@ class Mix:
     async def inc_upload_count(cls):
         async with cls.lock: cls.upload_count = cls.upload_count + 1
     @classmethod
-    async def reset_upload_count(cls):
+    async def reset_upload_count(cls, mix_id):
         async with cls.lock: cls.upload_count = 0
         log("Broadcasting upload counter reset", 2, "[Mix]")
         await WS.broadcast("json", { "type": "upload_count", "upload_count": 0 })
+        log("Broadcasting mix initiation", 2, "[Mix]")
+        await WS.broadcast("json", { "type": "mix_initiation", "mix_id": mix_id })
     @staticmethod
     def atomic_write_binary(filename, data):
         dir_path = Path(Const.uploads_dir)
@@ -95,13 +96,13 @@ class Mix:
             await asyncio.sleep(1)
         raise TimoutError(f"Mix {mix_id} did not complete within {Const.mix_timeout} seconds.")
     @staticmethod
-    async def broadcast(contributors_path, mix_path):
+    async def broadcast(contributors_path, mix_path, mix_id):
         with open(mix_path, 'rb') as g: bytes = g.read()
-        await WS.broadcast("bytes", bytes)
         with open(contributors_path, 'r') as f:
             contributors = json.loads(f.read())
             contributors = [{token: IP.get_country_code(ip)} for d in contributors for token, ip in d.items()]
-        await WS.broadcast("json", {"type": "mix_contributors", "contributors": contributors})
+        await WS.broadcast("json", {"type": "mix_contributors", "contributors": contributors, "mix_id": mix_id})
+        await WS.broadcast("bytes", bytes)
 
 class Chant:
     ref_audio = None
@@ -109,16 +110,15 @@ class Chant:
     ref_stanzas = None
     @classmethod
     def load_references(cls):
-        cls.ref_audio, cls.ref_ticks, cls.ref_stanzas = cls.get_refs([Const.ref_audio_path, Const.ref_ticks_path, Const.ref_stanzas_path])
-    @staticmethod
-    def get_refs(ref_paths):
-        refs = []
-        for ref_path in ref_paths:
-            path = Path(ref_path)
-            if not path.is_file(): log(f"Fatal: reference file not found: {path.name}", 0, "[App]")
-            if path.suffix.lower() == ".txt": refs.append(path.read_text(encoding="utf-8"))
-            else: refs.append(path.read_bytes())
-        return tuple(refs)
+        def get_refs(ref_paths):
+            refs = []
+            for ref_path in ref_paths:
+                path = Path(ref_path)
+                if not path.is_file(): log(f"Fatal: reference file not found: {path.name}", 0, "[App]")
+                if path.suffix.lower() == ".txt": refs.append(path.read_text(encoding="utf-8"))
+                else: refs.append(path.read_bytes())
+            return tuple(refs)
+        cls.ref_audio, cls.ref_ticks, cls.ref_stanzas = get_refs([Const.ref_audio_path, Const.ref_ticks_path, Const.ref_stanzas_path])
 
 class WS:
     client_counter = 0
@@ -192,12 +192,12 @@ class BIP39WordList:
         return "-".join(secrets.SystemRandom().choices(cls.words, k=Const.words_per_token))
 
 class IP:
-    DB_PATH = Path(Const.countries_db)
+    db_path = Path(Const.countries_db)
     @staticmethod
     @lru_cache(maxsize=1)
     def _get_reader():
-        if not IP.DB_PATH.exists(): raise FileNotFoundError(f"GeoIP database not found at {IP.DB_PATH}.")
-        return geoip2.database.Reader(str(IP.DB_PATH))
+        if not IP.db_path.exists(): raise FileNotFoundError(f"GeoIP database not found at {IP.db_path}.")
+        return geoip2.database.Reader(str(IP.db_path))
     @staticmethod
     def get_client_ip(request: Request):
         if cf_ip := request.headers.get("cf-connecting-ip"): return cf_ip.strip()
@@ -231,12 +231,12 @@ def create_app():
             await WS.broadcast("json", { "type": "upload_count", "upload_count": count })
             if count >= Const.uploads_per_mix:
                 log("Initiating mix...", 1, "[Mix]")
-                await Mix.reset_upload_count()
                 mix_id = int(time.time())
+                await Mix.reset_upload_count(mix_id)
                 try:
                     Mix.launch_mix_process(mix_id)
                     contributors_path, mix_path = await Mix.wait_for_mix_completion(mix_id)
-                    await Mix.broadcast(contributors_path, mix_path)
+                    await Mix.broadcast(contributors_path, mix_path, mix_id)
                 except TimeoutError: log(f"Error: Mix {mix_id} timed out", 1, "[Mix]")
                 except Exception as e: log(f"Error in mix_worker loop: {e}", 1, "[Mix]")
             await asyncio.sleep(5)
@@ -328,8 +328,7 @@ def create_app():
                     try:
                         msg = await asyncio.wait_for(queue.get(), timeout=1.0)
                         if msg.get("mode") == "json": await websocket.send_json(msg["packet"])
-                        else:
-                            await websocket.send_bytes(msg.get("packet", b""))
+                        else: await websocket.send_bytes(msg.get("packet", b""))
                     except asyncio.TimeoutError: continue
                     except Exception as e: break
             async def receiver():
@@ -419,14 +418,13 @@ def create_app():
         flags_dir = Path(Const.flags_dir)
         file_path = flags_dir / Path(f"{country_code.lower()}.png")
         if not file_path.exists(): file_path = flags_dir / Path("xx.png")
-        return FileResponse(file)
+        return FileResponse(file_path)
     @app.get("/")
     async def root(request: Request):
         context = {
             "request": request,
             "time_slot_duration_sec": Const.time_slot_duration_sec,
             "rec_slot_duration_sec": Const.rec_slot_duration_sec,
-            "rec_tolerance_sec": Const.rec_tolerance_sec,
             "uploads_per_mix": Const.uploads_per_mix,
             "max_upload_size": Const.max_upload_size,
         }
@@ -437,8 +435,11 @@ def create_app():
     return app
 
 def main():
-    Path(Const.uploads_dir).mkdir(parents=True, exist_ok=True)
-    Path(Const.mixes_dir).mkdir(parents=True, exist_ok=True)
+    def check_dir(path):
+        path = Path(path)
+        if not path.is_dir(): log(f"Fatal: directory not found: {path.name}", 0, "[App]")
+    check_dir(Const.uploads_dir)
+    check_dir(Const.mixes_dir)
     app = create_app()
     uvicorn.run("main:create_app", factory=True, host="0.0.0.0", port=443, ssl_keyfile="fastapi.key", ssl_certfile="fastapi.crt")
 
