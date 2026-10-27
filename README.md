@@ -59,7 +59,7 @@ when `mix_worker.py` is first run. (There will be an extra delay during the firs
 a HuggingFace account — just ignore it.) `mix_worker.py` can run as a service started manually or automatically at
 bootup by registering `mix_worker.service` with the system. Example commands are included as comments inside the service
 file itself. Making `mix_worker.py` a service ensures that the very large language model is only loaded into memory once
-per session (and not per mix).
+per session (and not per mix). Also, it can be run in the background at a lower priority than `main.py`.
 
 For best ASR performance — and best mix results — correctly pronounce and clearly enunciate recorded words in a
 quiet environment while avoiding touching your computer or other recording device while chanting.

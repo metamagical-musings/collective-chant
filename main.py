@@ -30,6 +30,7 @@ class Const:
     max_queue_size = 100
     uploads_dir = "uploads"
     mixes_dir = "mixes"
+    mix_id_path = "./mix_id.json"
     word_list = "static/bip39_english.txt"
     flags_dir = "static/flags"
     countries_db = "static/GeoLite2-Country.mmdb"
@@ -37,6 +38,23 @@ class Const:
     ref_audio_path = "reference/chant.webm"
     ref_ticks_path = "reference/chant_ticks.webm"
     ref_stanzas_path = "reference/chant_stanzas.txt"
+
+class Util:
+    @staticmethod
+    def convert_to_mb(size):
+        return f"{size // (1024 * 1024)} MB"
+    @staticmethod
+    def atomic_write_binary(file_path, data):
+        temp_path = file_path.with_suffix('.tmp')
+        try:
+            with open(temp_path, 'wb') as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, file_path)
+        except Exception as e:
+            if temp_path.exists(): temp_path.unlink(missing_ok=True)
+            log(f"Error saving upload {filename}", 1, "[Mix]")
 
 class GetCurrent:
     @staticmethod
@@ -51,42 +69,47 @@ class GetCurrent:
 
 class Mix:
     upload_count = 0
+    mix_id = 0
+    epoch = 0
+    mix_id_path = Path(Const.mix_id_path)
     lock = asyncio.Lock()
     @classmethod
-    async def inc_upload_count(cls):
-        async with cls.lock: cls.upload_count = cls.upload_count + 1
+    def save_mix_id(cls):
+        cls.mix_id_path.write_text(json.dumps({"mix_id": cls.mix_id, "epoch": cls.epoch}, indent=2), encoding="utf-8")
     @classmethod
-    async def reset_upload_count(cls, mix_id):
+    def load_mix_id(cls):
+        if not cls.mix_id_path.exists():
+            cls.epoch = int(time.time())
+            cls.save_mix_id()
+        else:
+            data = json.loads(cls.mix_id_path.read_text(encoding="utf-8"))
+            cls.mix_id = data["mix_id"]
+            cls.epoch = data["epoch"]
+    @classmethod
+    async def inc_mix_id(cls):
+        async with cls.lock:
+            cls.mix_id += 1
+            cls.save_mix_id()
+    @classmethod
+    async def inc_upload_count(cls):
+        async with cls.lock: cls.upload_count += 1
+    @classmethod
+    async def reset_upload_count(cls):
         async with cls.lock: cls.upload_count = 0
         log("Broadcasting upload counter reset", 2, "[Mix]")
         await WS.broadcast("json", { "type": "upload_count", "upload_count": 0 })
         log("Broadcasting mix initiation", 2, "[Mix]")
-        await WS.broadcast("json", { "type": "mix_initiation", "mix_id": mix_id })
-    @staticmethod
-    def atomic_write_binary(filename, data):
-        dir_path = Path(Const.uploads_dir)
-        dir_path.mkdir(parents=True, exist_ok=True)
-        file_path = dir_path / filename
-        temp_path = file_path.with_suffix('.tmp')
-        try:
-            with open(temp_path, 'wb') as f:
-                f.write(data)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(temp_path, file_path)
-        except Exception as e:
-            if temp_path.exists(): temp_path.unlink(missing_ok=True)
-            log(f"Error saving upload {filename}", 1, "[Mix]")
-    @staticmethod
-    def launch_mix_process(mix_id):
-        Path(f"{Const.mixes_dir}/{mix_id}.mix").touch()
-        log(f"Mix process started with ID: {mix_id}", 1,  "[Mix]")
+        await WS.broadcast("json", { "type": "mix_initiation", "mix_id": cls.mix_id })
+    @classmethod
+    def launch_mix_process(cls):
+        Path(f"{Const.mixes_dir}/{cls.mix_id}.mix").touch()
+        log(f"Mix process started with ID: {cls.mix_id}", 1,  "[Mix]")
         return
-    @staticmethod
-    async def wait_for_mix_completion(mix_id):
-        log(f"Waiting for mix {mix_id} to complete...", 2, "[Mix]")
-        mix_file = Path(Const.mixes_dir) / f"{mix_id}.webm"
-        contributors_file = Path(Const.mixes_dir) / f"{mix_id}.json"
+    @classmethod
+    async def wait_for_mix_completion(cls):
+        log(f"Waiting for mix {cls.mix_id} to complete...", 2, "[Mix]")
+        mix_file = Path(Const.mixes_dir) / f"{cls.mix_id}.webm"
+        contributors_file = Path(Const.mixes_dir) / f"{cls.mix_id}.json"
         start_time = time.time()
         while time.time() - start_time < Const.mix_timeout:
             if contributors_file.exists() and mix_file.exists():
@@ -94,14 +117,14 @@ class Mix:
                 log(f"Mix audio file found: {mix_file}", 1, "[Mix]")
                 return (contributors_file, mix_file)
             await asyncio.sleep(1)
-        raise TimoutError(f"Mix {mix_id} did not complete within {Const.mix_timeout} seconds.")
-    @staticmethod
-    async def broadcast(contributors_path, mix_path, mix_id):
+        raise TimoutError(f"Mix {cls.mix_id} did not complete within {Const.mix_timeout} seconds.")
+    @classmethod
+    async def broadcast(cls, contributors_path, mix_path):
         with open(mix_path, 'rb') as g: bytes = g.read()
         with open(contributors_path, 'r') as f:
             contributors = json.loads(f.read())
             contributors = [{token: IP.get_country_code(ip)} for d in contributors for token, ip in d.items()]
-        await WS.broadcast("json", {"type": "mix_contributors", "contributors": contributors, "mix_id": mix_id})
+        await WS.broadcast("json", {"type": "mix_contributors", "contributors": contributors, "mix_id": cls.mix_id})
         await WS.broadcast("bytes", bytes)
 
 class Chant:
@@ -231,13 +254,13 @@ def create_app():
             await WS.broadcast("json", { "type": "upload_count", "upload_count": count })
             if count >= Const.uploads_per_mix:
                 log("Initiating mix...", 1, "[Mix]")
-                mix_id = int(time.time())
-                await Mix.reset_upload_count(mix_id)
+                await Mix.inc_mix_id()
+                await Mix.reset_upload_count()
                 try:
-                    Mix.launch_mix_process(mix_id)
-                    contributors_path, mix_path = await Mix.wait_for_mix_completion(mix_id)
-                    await Mix.broadcast(contributors_path, mix_path, mix_id)
-                except TimeoutError: log(f"Error: Mix {mix_id} timed out", 1, "[Mix]")
+                    Mix.launch_mix_process()
+                    contributors_path, mix_path = await Mix.wait_for_mix_completion()
+                    await Mix.broadcast(contributors_path, mix_path)
+                except TimeoutError: log(f"Error: Mix {Mix.mix_id} timed out", 1, "[Mix]")
                 except Exception as e: log(f"Error in mix_worker loop: {e}", 1, "[Mix]")
             await asyncio.sleep(5)
     async def token_worker():
@@ -284,12 +307,13 @@ def create_app():
     async def lifespan(app: FastAPI):
         Chant.load_references()
         BIP39WordList.load_words()
+        Mix.load_mix_id()
         log("Server started. Waiting for connections...", 1, "[App]")
         app.state.background_tasks = [
             asyncio.create_task(mix_worker(), name="mix_worker"),
             asyncio.create_task(token_worker(), name="token_worker"),
         ]
-        log("Lifespan startup successful", 1, "[App]")
+        log("Lifespan started", 1, "[App]")
         yield  # The app runs here
         for task in app.state.background_tasks:
             if task.done(): continue
@@ -352,12 +376,10 @@ def create_app():
                 if not t.done(): t.cancel()
     @app.post("/upload")
     async def upload_endpoint(request: Request):
-        def convert_to_mb(size):
-            return f"{size // (1024 * 1024)} MB"
         log("Handling upload request...", 1, "[Upload]")
         content_length = request.headers.get("content-length")
         if content_length and int(content_length) > Const.max_upload_size + (512 * 1024):  # small overhead
-            return { "status": f"Upload request ({convert_to_mb(int(content_length))}) exceeds maximum allowed: {convert_to_mb(Const.max_upload_size)}." }
+            return { "status": f"Upload request ({Util.convert_to_mb(int(content_length))}) exceeds maximum allowed: {Util.convert_to_mb(Const.max_upload_size)}." }
         log("WebM content length OK", 2, "[Upload]")
         parser = StreamingFormDataParser(request.headers)
         file_target = ValueTarget(validator=MaxSizeValidator(Const.max_upload_size))
@@ -382,20 +404,21 @@ def create_app():
                         continue
                     return { "status": "Invalid audio file: not WebM." }
         except ValidationError as e:
-            return { "status": f"Upload request exceeds maximum allowed: {convert_to_mb(Const.max_upload_size)}." }
-        log(f"Size within limit: {convert_to_mb(Const.max_upload_size)}", 2, "[Upload]")
+            return { "status": f"Upload request exceeds maximum allowed: {Util.convert_to_mb(Const.max_upload_size)}." }
+        log(f"Size within limit: {Util.convert_to_mb(Const.max_upload_size)}", 2, "[Upload]")
         if not file_target.value: return { "status": "Incomplete audio upload." }
         file_bytes = file_target.value
         rec_size = len(file_bytes)
         log(f"Actual audio rec_size OK: {rec_size}", 2, "[Upload]")
         md5_hash = hashlib.md5(file_bytes).hexdigest()
         log(f"Audio hash: {md5_hash}", 2 , "[Upload]")
-        existing_files = list(Path(Const.uploads_dir).glob(f"{md5_hash}.*.webm"))
+        uploads_dir_path = Path(Const.uploads_dir)
+        existing_files = list(uploads_dir_path.glob(f"{md5_hash}.*.webm"))
         if existing_files: return { "status": "Audio file previously uploaded." }
         log("Non-duplicate audio file", 2 , "[Upload]")
         ip = IP.get_client_ip(request)
         filename = f"{md5_hash}.{token}.{ip}.webm"
-        Mix.atomic_write_binary(filename, file_bytes)
+        Util.atomic_write_binary(uploads_dir_path/filename, file_bytes)
         log(f"Audio file saved to: {filename}", 2, "[Upload]")
         await Mix.inc_upload_count()
         return { "status": "Upload successful." }
@@ -427,6 +450,8 @@ def create_app():
             "rec_slot_duration_sec": Const.rec_slot_duration_sec,
             "uploads_per_mix": Const.uploads_per_mix,
             "max_upload_size": Const.max_upload_size,
+            "last_mix_id": Mix.mix_id,
+            "mix_epoch": Mix.epoch,
         }
         return templates.TemplateResponse(request, "index.html", context)
     @app.get("/favicon.ico", include_in_schema=False)

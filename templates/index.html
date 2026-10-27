@@ -131,6 +131,8 @@
             rec_slot_duration_sec: {{ rec_slot_duration_sec }},
             uploads_per_mix: {{ uploads_per_mix }},
             max_upload_size: {{ max_upload_size }},
+            last_mix_id: {{ last_mix_id }},
+            mix_epoch: {{ mix_epoch }},
             start_window: 15,
             expiration_zone: 5
         };
@@ -385,7 +387,7 @@
                 addStatusMessage(`Reference chant dowloaded: ${convertToMB(blob.size)}.`, 'success');
                 updateDisplay();
             }
-            else addStatusMessage(`Mix chant ${currentMixId} dowloaded: ${convertToMB(blob.size)}.`, 'success');
+            else addStatusMessage(`Mix ${currentMixId} dowloaded: ${convertToMB(blob.size)}.`, 'success');
             mixChantURL = URL.createObjectURL(blob);
         }
         function checkAudioSupport() {
@@ -558,7 +560,7 @@
                 URL.revokeObjectURL(localURL);
                 localURL = URL.createObjectURL(localBlob);
                 els.localAudioPlayer.src = localURL;
-                addStatusMessage(`Audio file loaded successfully: ${file.name}`, 'success');
+                addStatusMessage(`Audio file successfully loaded: ${file.name}`, 'success');
             };
             reader.readAsArrayBuffer(file);
             els.fileInput.value = '';
@@ -579,6 +581,8 @@
                 addStatusMessage(msg, 'error');
                 return;
             }
+            const date = new Date(config.mix_epoch * 1000);
+            addStatusMessage(`${config.last_mix_id} mixes done since ${date.toLocaleString()}.`, "info")
             connectWebSocket();
             function update() {
                 updateDisplay();
