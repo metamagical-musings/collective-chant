@@ -425,6 +425,7 @@ def main():
     Reference.ref_audio = Audio(*Util.check_dirs_files(Const.ref_orig_path), 0).process(timer, True) # never returns False
     Util.log_stats(Path(Const.ref_orig_path), Reference.ref_audio)
     uploads_dir, mixes_dir, tmp_dir = Util.check_dirs_files(Const.uploads_dir, Const.mixes_dir, Const.tmp_dir)
+    Util.log(f"Waiting for mix signal...", 1)
     try:
         while True:
             if len(sys.argv) > 1:
@@ -436,6 +437,7 @@ def main():
                 continue
             Util.log(f"Processing mix {mix_id}...", 1)
             run(mix_id, uploads_dir, mixes_dir, Timer())
+            Util.log(f"Waiting for mix signal...", 1)
     except KeyboardInterrupt:
         Util.log("Program terminated by user.", 1)
         return

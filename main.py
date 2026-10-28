@@ -24,12 +24,13 @@ class Const:
     rec_slots_per_time_slot = 1.5 # float
     rec_slot_lifespan = 6 # number of time_slots
     rec_slot_duration_sec = rec_slot_lifespan * time_slot_duration_sec
-    mix_timeout = 300
+    mix_timeout_sec = 300
     uploads_per_mix = 2
     max_upload_size = 10 * 1024 * 1024
     max_queue_size = 100
     uploads_dir = "uploads"
     mixes_dir = "mixes"
+    archive_dir = "mixes/archive"
     mix_id_path = "./mix_id.json"
     word_list = "static/bip39_english.txt"
     flags_dir = "static/flags"
@@ -72,6 +73,8 @@ class Mix:
     mix_id = 0
     epoch = 0
     mix_id_path = Path(Const.mix_id_path)
+    mixes_dir_path = Path(Const.mixes_dir)
+    archive_dir_path = Path(Const.archive_dir)
     lock = asyncio.Lock()
     @classmethod
     def save_mix_id(cls):
@@ -94,30 +97,39 @@ class Mix:
     async def inc_upload_count(cls):
         async with cls.lock: cls.upload_count += 1
     @classmethod
+    async def mix_initiation(cls):
+        log("Broadcasting mix {Mix.mix_id} initiation", 2, "[Mix]")
+        await WS.broadcast("json", { "type": "mix_initiation", "mix_id": cls.mix_id })
+    @classmethod
     async def reset_upload_count(cls):
         async with cls.lock: cls.upload_count = 0
         log("Broadcasting upload counter reset", 2, "[Mix]")
         await WS.broadcast("json", { "type": "upload_count", "upload_count": 0 })
-        log("Broadcasting mix initiation", 2, "[Mix]")
-        await WS.broadcast("json", { "type": "mix_initiation", "mix_id": cls.mix_id })
     @classmethod
-    def launch_mix_process(cls):
-        Path(f"{Const.mixes_dir}/{cls.mix_id}.mix").touch()
-        log(f"Mix process started with ID: {cls.mix_id}", 1,  "[Mix]")
-        return
+    async def launch_mix_process(cls):
+        async with cls.lock:
+            mix_path = cls.mixes_dir_path / f"{cls.mix_id}.mix"
+            mix_path.touch()
+        log(f"Mix {cls.mix_id} process started.", 1,  "[Mix]")
     @classmethod
     async def wait_for_mix_completion(cls):
         log(f"Waiting for mix {cls.mix_id} to complete...", 2, "[Mix]")
-        mix_file = Path(Const.mixes_dir) / f"{cls.mix_id}.webm"
-        contributors_file = Path(Const.mixes_dir) / f"{cls.mix_id}.json"
+        mix_path = cls.mixes_dir_path / f"{cls.mix_id}.webm"
+        contributors_path = cls.mixes_dir_path / f"{cls.mix_id}.json"
         start_time = time.time()
-        while time.time() - start_time < Const.mix_timeout:
-            if contributors_file.exists() and mix_file.exists():
-                log(f"Mix contributors file found: {contributors_file}", 1, "[Mix]")
-                log(f"Mix audio file found: {mix_file}", 1, "[Mix]")
-                return (contributors_file, mix_file)
+        while time.time() - start_time < Const.mix_timeout_sec:
+            if contributors_path.exists() and mix_path.exists():
+                log(f"Mix contributors file found: {contributors_path}", 1, "[Mix]")
+                log(f"Mix audio file found: {mix_path}", 1, "[Mix]")
+                return (contributors_path, mix_path)
             await asyncio.sleep(1)
-        raise TimoutError(f"Mix {cls.mix_id} did not complete within {Const.mix_timeout} seconds.")
+        raise TimoutError(f"Mix {cls.mix_id} did not complete within {Const.mix_timeout_sec} seconds.")
+    @classmethod
+    async def archive_mix(cls, contributors_path, mix_path):
+        async with cls.lock:
+            mix_path.rename(cls.archive_dir_path / mix_path.name)
+            contributors_path.rename(cls.archive_dir_path / contributors_path.name)
+        log(f"Mix {cls.mix_id} moved to archive.", 1,  "[Mix]")
     @classmethod
     async def broadcast(cls, contributors_path, mix_path):
         with open(mix_path, 'rb') as g: bytes = g.read()
@@ -253,13 +265,14 @@ def create_app():
     #        log(f"Broadcasting upload count: {count}", 2, "[Mix]")
             await WS.broadcast("json", { "type": "upload_count", "upload_count": count })
             if count >= Const.uploads_per_mix:
-                log("Initiating mix...", 1, "[Mix]")
                 await Mix.inc_mix_id()
-                await Mix.reset_upload_count()
+                await Mix.mix_initiation()
                 try:
-                    Mix.launch_mix_process()
+                    await Mix.launch_mix_process()
                     contributors_path, mix_path = await Mix.wait_for_mix_completion()
+                    await Mix.reset_upload_count()
                     await Mix.broadcast(contributors_path, mix_path)
+                    await Mix.archive_mix(contributors_path, mix_path)
                 except TimeoutError: log(f"Error: Mix {Mix.mix_id} timed out", 1, "[Mix]")
                 except Exception as e: log(f"Error in mix_worker loop: {e}", 1, "[Mix]")
             await asyncio.sleep(5)
@@ -438,10 +451,10 @@ def create_app():
         }
     @app.get("/flag/{country_code}")
     def get_flag(country_code):
-        flags_dir = Path(Const.flags_dir)
-        file_path = flags_dir / Path(f"{country_code.lower()}.png")
-        if not file_path.exists(): file_path = flags_dir / Path("xx.png")
-        return FileResponse(file_path)
+        flags_dir_path = Path(Const.flags_dir)
+        flags_path = flags_dir_path / Path(f"{country_code.lower()}.png")
+        if not flags_path.exists(): flags_path = flags_dir_path / Path("xx.png")
+        return FileResponse(flags_path)
     @app.get("/")
     async def root(request: Request):
         context = {
@@ -465,6 +478,7 @@ def main():
         if not path.is_dir(): log(f"Fatal: directory not found: {path.name}", 0, "[App]")
     check_dir(Const.uploads_dir)
     check_dir(Const.mixes_dir)
+    check_dir(Const.archive_dir)
     app = create_app()
     uvicorn.run("main:create_app", factory=True, host="0.0.0.0", port=443, ssl_keyfile="fastapi.key", ssl_certfile="fastapi.crt")
 
