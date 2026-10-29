@@ -365,6 +365,9 @@
                 case 'mix_initiation':
                     addStatusMessage(`Mix ${data.mix_id} initiated...`, 'info');
                     break;
+                case 'mix_error':
+                    addStatusMessage(`Mix ${data.mix_id} error - retry with reference`, 'info');
+                    break;
                 case 'mix_contributors':
                     currentMixId = data.mix_id;
                     currentContributors = Object.fromEntries(data.contributors.flatMap(obj => Object.entries(obj)).sort(([a], [b]) => a.localeCompare(b)));

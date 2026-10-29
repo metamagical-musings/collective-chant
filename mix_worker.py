@@ -6,7 +6,6 @@ from pydub import AudioSegment, silence
 from pathlib import Path
 from faster_whisper import WhisperModel
 from io import BytesIO
-from main import Const as MainConst
 
 class Const:
     error_level = 3 # 0==FATAL, 1==COURSE, 2==FINE, 3==TIMING
@@ -14,9 +13,9 @@ class Const:
     mixes_dir = "mixes"
     tmp_dir = "tmp"
     ref_orig_path = "reference/chant.mp3"
-    ref_audio_path = MainConst.ref_audio_path
-    ref_ticks_path = MainConst.ref_ticks_path
-    ref_stanzas_path = MainConst.ref_stanzas_path
+    ref_audio_path = "reference/chant.webm"
+    ref_ticks_path = "reference/chant_ticks.webm"
+    ref_stanzas_path = "reference/chant_stanzas.txt"
     stanza_tmp_dir = "tmp/chant_stanzas"
     # prepare_audio()
     ffmpeg_timeout = 60.0
@@ -134,7 +133,7 @@ class Util:
         part = out_path.with_suffix(out_path.suffix + ".part")
         with open(part, "w") as fh: json.dump(obj, fh)
         os.replace(part, out_path)
-    
+
 class Whisper:
     model = None
     @classmethod
