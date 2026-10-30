@@ -75,3 +75,30 @@ There are many tunable constants in the `Const` object of `mix_worker.py`. Some 
 |max_stanza_word_errors | 1 | If any single stanza exceeds this word error limit, the entire audio is rejected.|
 |ratio_tolerance | 0.1 | Stanzas that must be stretched/compressed more than a factor of 1 +/- this value are silenced.|
 |max_stanza_duration_errors | 1 | If more than this number of stanzas are silenced, the entire audio is rejected.|
+
+### `main.py`
+A Python server based on the FastAPI module. It serves an HTML/JS webpage that allows users to listen to a recorded chant
+and to upload their own recordings to the server to be mixed into a chorus.
+
+`main.py` synchronizes with universal time. Chants are repeated every ´time_slot_duration_sec´ (60 seconds by default),
+so their duration must be less than ´time_slot_duration_sec´ (by 5 - 10 seconds, recommended) to allow for short
+delays in browser audio timing and to give users chanting along with the recording a chance to pause between rounds.
+
+The first chant played is the reference chant. When `uploads_per_mix` user recordings have been successfully uploaded,
+the reference chant is replaced by a mix. New mixes are created as additional recordings are uploaded.
+
+The number of uploads per ´time_slot_duration_sec´ is limited to `rec_slots_per_time_slot` (1.5 uploads per 60 seconds
+by default). These allocated recording slots are randomly distributed among connected users when they become available at
+the beginning of each time_slot by means of a random three-word token. The use of these tokens, besides limiting abuse,
+also eliminates the need for user accounts (no login needed), thus ensuring anonymity. Tokens must be used within
+`rec_slot_duration_sec` before they expire.
+
+Although `main.py` is aware of users' IP addresses and associates uploaded recordings with them, both uploaded
+recordings and IP addresses are erased after each mix completes to protect users' anonymity. `uploads_per_mix`
+should be set large enough to provide addtional anonymity protection (10 - 20 minumum recommended). Recordings are also
+associated with users' tokens. When a mix is downloaded to connected client browsers, a JSON file containing the tokens
+associated with the recordings contributed to the mix is also download, so that users will know that their contribution
+is included in the mix even if they cannot recognize their own voice in the chorus. Although IP addresses are hidden
+from users, they are used to identify the countries associated with contributions so that all users can see which
+countries contributed to the mix.
+
