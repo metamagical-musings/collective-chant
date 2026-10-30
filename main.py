@@ -1,4 +1,5 @@
 import sys, os, json, time, secrets, asyncio, uvicorn, hashlib
+from filelock import FileLock, Timeout
 from datetime import datetime
 from pathlib import Path
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, BackgroundTasks, UploadFile, HTTPException
@@ -20,6 +21,7 @@ from mix_worker import Const as MWConst
 
 class Const:
     error_level = 2 # 0==FATAL, 1==COURSE, 2==FINE
+    lock_file = "main.lock"
     words_per_token = 3
     time_slot_duration_sec = 60
     rec_slots_per_time_slot = 1.5 # float
@@ -222,6 +224,20 @@ class TokenStore:
             await cls._cleanup_expired()
             return sum(1 for data in cls.tokens.values() if data["granted"])
 
+class MD5HashStore:
+    md5_hashes = []
+    lock = asyncio.Lock()
+    @classmethod
+    async def add(cls, md5_hash):
+        async with cls.lock:
+            if md5_hash not in cls.md5_hashes:
+                cls.md5_hashes.append(md5_hash)
+                return True
+            return False
+    @classmethod
+    async def reset(cls):
+        async with cls.lock: cls.md5_hashes = []
+
 class BIP39WordList:
     words = []
     @classmethod
@@ -270,6 +286,7 @@ def create_app():
                     await Mix.launch_mix_process()
                     contributors_path, mix_path = await Mix.await_mix_completion()
                     await Mix.reset_upload_count()
+                    await MD5HashStore.reset()
                     await Mix.broadcast(contributors_path, mix_path)
                     await Mix.archive_mix(contributors_path, mix_path)
                 except TimeoutError as e:
@@ -428,13 +445,12 @@ def create_app():
         Util.log(f"Actual audio rec_size OK: {rec_size}", 2, "[Upload]")
         md5_hash = hashlib.md5(file_bytes).hexdigest()
         Util.log(f"Audio hash: {md5_hash}", 2 , "[Upload]")
-        uploads_dir_path = Path(Const.uploads_dir)
-        existing_files = list(uploads_dir_path.glob(f"{md5_hash}.*.webm"))
-        if existing_files: return { "status": "Audio file previously uploaded." }
+        unique = await MD5HashStore.add(md5_hash)
+        if not unique: return { "status": "Audio file previously uploaded." }
         Util.log("Non-duplicate audio file", 2 , "[Upload]")
         ip = IP.get_client_ip(request)
         filename = f"{md5_hash}.{token}.{ip}.webm"
-        Util.atomic_write_binary(uploads_dir_path/filename, file_bytes)
+        Util.atomic_write_binary(Path(Const.uploads_dir)/filename, file_bytes)
         Util.log(f"Audio file saved to: {filename}", 2, "[Upload]")
         await Mix.inc_upload_count()
         return { "status": "Upload successful." }
@@ -487,4 +503,10 @@ def main():
     app = create_app()
     uvicorn.run("main:create_app", factory=True, host="0.0.0.0", port=443, ssl_keyfile="fastapi.key", ssl_certfile="fastapi.crt")
 
-if __name__ == "__main__": main()
+if __name__ == "__main__":
+    lock = FileLock(Const.lock_file)
+    try: lock.acquire(timeout=0)
+    except Timeout:
+        Util.log("Another instance is already running.", 0, "[Main]")
+        sys.exit(1)
+    main()

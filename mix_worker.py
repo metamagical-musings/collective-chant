@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json, os, re, shutil, sys, time, subprocess, math
 import numpy as np, pyrubberband as pyrb, soundfile as sf
+from filelock import FileLock, Timeout
 from datetime import datetime
 from pydub import AudioSegment, silence
 from pathlib import Path
@@ -9,6 +10,7 @@ from io import BytesIO
 
 class Const:
     error_level = 3 # 0==FATAL, 1==COURSE, 2==FINE, 3==TIMING
+    lock_file = "mix_worker.lock"
     uploads_dir = "uploads"
     mixes_dir = "mixes"
     tmp_dir = "tmp"
@@ -441,5 +443,10 @@ def main():
         Util.log("Program terminated by user.", 1)
         return
 if __name__ == "__main__":
+    lock = FileLock(Const.lock_file)
+    try: lock.acquire(timeout=0)
+    except Timeout:
+        Util.log("Another instance is already running.", 0)
+        sys.exit(1)
     main()
     sys.exit(0)
