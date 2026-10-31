@@ -24,12 +24,11 @@ class Const:
     lock_file = "main.lock"
     words_per_token = 3
     time_slot_duration_sec = 60
-    rec_slots_per_time_slot = 1.5 # float
-    rec_slot_lifespan = 6 # number of time_slots
-    rec_slot_duration_sec = rec_slot_lifespan * time_slot_duration_sec
-    mix_timeout_sec = 300
+    max_uploads_per_time_slot = 1.5 # float
+    token_expiration_sec = 6 * time_slot_duration_sec
     uploads_per_mix = 2
-    max_upload_size = 10 * 1024 * 1024
+    max_upload_size_bytes = 10 * 1024 * 1024
+    mix_timeout_sec = 300
     max_queue_size = 100
     uploads_dir = "uploads"
     mixes_dir = "mixes"
@@ -298,7 +297,7 @@ def create_app():
             await asyncio.sleep(5)
     async def token_worker():
         def get_prev_allocations(index):
-            return round(index * Const.rec_slots_per_time_slot)
+            return round(index * Const.max_uploads_per_time_slot)
         Util.log(f"Starting background worker...", 1, "[Token]")
         next_time_slot_index = None
         while True:
@@ -314,7 +313,7 @@ def create_app():
             Util.log(f"New time slot #{time_slot_index}", 2, "[Token]")
             new_allocations = get_prev_allocations(time_slot_index + 1) - get_prev_allocations(time_slot_index)
             new_tokens = []
-            expires_at = GetCurrent.time_slot_start(now) + Const.rec_slot_duration_sec
+            expires_at = GetCurrent.time_slot_start(now) + Const.token_expiration_sec
             for i in range(new_allocations):
                 token = BIP39WordList.generate_token()
                 await TokenStore.add_token(token, expires_at)
@@ -411,11 +410,11 @@ def create_app():
     async def upload_endpoint(request: Request):
         Util.log("Handling upload request...", 1, "[Upload]")
         content_length = request.headers.get("content-length")
-        if content_length and int(content_length) > Const.max_upload_size + (512 * 1024):  # small overhead
-            return { "status": f"Upload request ({Util.convert_to_mb(int(content_length))}) exceeds maximum allowed: {Util.convert_to_mb(Const.max_upload_size)}." }
+        if content_length and int(content_length) > Const.max_upload_size_bytes + (512 * 1024):  # small overhead
+            return { "status": f"Upload request ({Util.convert_to_mb(int(content_length))}) exceeds maximum allowed: {Util.convert_to_mb(Const.max_upload_size_bytes)}." }
         Util.log("WebM content length OK", 2, "[Upload]")
         parser = StreamingFormDataParser(request.headers)
-        file_target = ValueTarget(validator=MaxSizeValidator(Const.max_upload_size))
+        file_target = ValueTarget(validator=MaxSizeValidator(Const.max_upload_size_bytes))
         token_target = ValueTarget()
         parser.register("file", file_target)
         parser.register("token", token_target)
@@ -437,8 +436,8 @@ def create_app():
                         continue
                     return { "status": "Invalid audio file: not WebM." }
         except ValidationError as e:
-            return { "status": f"Upload request exceeds maximum allowed: {Util.convert_to_mb(Const.max_upload_size)}." }
-        Util.log(f"Size within limit: {Util.convert_to_mb(Const.max_upload_size)}", 2, "[Upload]")
+            return { "status": f"Upload request exceeds maximum allowed: {Util.convert_to_mb(Const.max_upload_size_bytes)}." }
+        Util.log(f"Size within limit: {Util.convert_to_mb(Const.max_upload_size_bytes)}", 2, "[Upload]")
         if not file_target.value: return { "status": "Incomplete audio upload." }
         file_bytes = file_target.value
         rec_size = len(file_bytes)
@@ -462,7 +461,7 @@ def create_app():
             "time_slot_duration_sec": Const.time_slot_duration_sec,
             "current_time_slot_index": GetCurrent.time_slot_index(now),
             "current_time_slot_remaining": GetCurrent.time_slot_remaining(now),
-            "rec_slot_duration_sec": Const.rec_slot_duration_sec,
+            "token_expiration_sec": Const.token_expiration_sec,
             "uploads_per_mix": Const.uploads_per_mix,
             "upload_count": Mix.upload_count,
             "token_count": await TokenStore.get_token_count(),
@@ -479,9 +478,9 @@ def create_app():
         context = {
             "request": request,
             "time_slot_duration_sec": Const.time_slot_duration_sec,
-            "rec_slot_duration_sec": Const.rec_slot_duration_sec,
+            "token_expiration_sec": Const.token_expiration_sec,
             "uploads_per_mix": Const.uploads_per_mix,
-            "max_upload_size": Const.max_upload_size,
+            "max_upload_size_bytes": Const.max_upload_size_bytes,
             "last_mix_id": Mix.mix_id,
             "mix_epoch": Mix.epoch,
         }

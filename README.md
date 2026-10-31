@@ -77,28 +77,52 @@ There are many tunable constants in the `Const` object of `mix_worker.py`. Some 
 |max_stanza_duration_errors | 1 | If more than this number of stanzas are silenced, the entire audio is rejected.|
 
 ### `main.py`
-A Python server based on the FastAPI module. It serves an HTML/JS webpage that allows users to listen to a recorded chant
-and to upload their own recordings to the server to be mixed into a chorus.
+A Python server based on the FastAPI module. It serves an HTML/JS webpage to browser clients which allows users
+to listen to a recorded chant and to upload their own recordings to the server to be mixed into a chorus.
 
-`main.py` synchronizes with universal time. Chants are repeated every ´time_slot_duration_sec´ (60 seconds by default),
-so their duration must be less than ´time_slot_duration_sec´ (by 5 - 10 seconds, recommended) to allow for short
-delays in browser audio timing and to give users chanting along with the recording a chance to pause between rounds.
+`main.py` synchronizes with universal time. Chants are repeated every ´time_slot_duration_sec´ so their duration
+must be shorter (by at least 5 seconds) to allow for short delays in browser audio timing and to give users chanting
+along with the recording a chance to pause between rounds.
 
 The first chant played is the reference chant. When `uploads_per_mix` user recordings have been successfully uploaded,
 the reference chant is replaced by a mix. New mixes are created as additional recordings are uploaded.
 
-The number of uploads per ´time_slot_duration_sec´ is limited to `rec_slots_per_time_slot` (1.5 uploads per 60 seconds
-by default). These allocated recording slots are randomly distributed among connected users when they become available at
-the beginning of each time_slot by means of a random three-word token. The use of these tokens, besides limiting abuse,
-also eliminates the need for user accounts (no login needed), thus ensuring anonymity. Tokens must be used within
-`rec_slot_duration_sec` before they expire.
+The number of uploads per `time_slot_duration_sec` is limited to `max_uploads_per_time_slot`. This upload quota
+is randomly distributed among connected users at the beginning of each time_slot by means of a random token consisting
+of `words_per_token` words per token. The use of such tokens provides the following benefits:
 
-Although `main.py` is aware of users' IP addresses and associates uploaded recordings with them, both uploaded
-recordings and IP addresses are erased after each mix completes to protect users' anonymity. `uploads_per_mix`
-should be set large enough to provide addtional anonymity protection (10 - 20 minumum recommended). Recordings are also
-associated with users' tokens. When a mix is downloaded to connected client browsers, a JSON file containing the tokens
-associated with the recordings contributed to the mix is also download, so that users will know that their contribution
-is included in the mix even if they cannot recognize their own voice in the chorus. Although IP addresses are hidden
-from users, they are used to identify the countries associated with contributions so that all users can see which
-countries contributed to the mix.
+- No user account (and no login) needed, ensuring anonymity.
+- Ensures that `mix_worker.py` has enough time to mix uploaded recordings.
+- Limits intentional upload flooding.
 
+Tokens must be used within `token_expiration_sec` before they expire.
+
+Uploaded recordings are screened before sending them to `mix_worker.py` as follows:
+
+- Must be WebM audio.
+- Must not exceed `max_upload_size_bytes` bytes.
+- Duplicate recordings not allowed during a mix cycle.
+
+Although `main.py` associates uploaded recordings with their corresponding IP addresses, both recordings and
+IP addresses are erased after each mix completes to protect users' anonymity. `uploads_per_mix`
+should be set large enough to provide addtional anonymity protection (10 - 20 recommended).
+
+Recordings are also associated with corresponding upload tokens. When a mix is downloaded to connected client
+browsers, a JSON file containing the tokens associated with the recordings contributed to the mix is also downloaded,
+so that users will know that their contribution is included in the mix even if they cannot recognize their own voice
+in the chorus. Although IP addresses are hidden from users, they are used to identify the countries associated with
+contributions so that all users can know which countries contributed to the mix.
+
+When a mix fails to complete within `mix_timeout_sec`, the mix is discarded and an error is logged.
+
+Some tunable constants in the `Const` object of `main.py`.
+
+| Constant | Suggested | Comment |
+|----------|:---------:|---------|
+|time_slot_duration_sec | 60 | Playback of the mix is repeated at this interval.|
+|max_uploads_per_time_slot | 1.5 | Global upload quota of tokens per time_slot.|
+|token_expiration_sec | 360 | Can use 6 * time_slot_duration_sec to keep proportion.|
+|max_upload_size_bytes | 10 * 1024 * 1024 | Maximum audio recording size in bytes.|
+|uploads_per_mix | 2 | Set large enough to provide anonymity in the mix chorus.|
+|words_per_token | 3 | Number of BIP39 words per token.|
+|mix_timeout_sec | 300 | Maximum time allowed for a mix to complete.|

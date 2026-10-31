@@ -128,9 +128,9 @@
     <script>
         const config = {
             time_slot_duration_sec: {{ time_slot_duration_sec }},
-            rec_slot_duration_sec: {{ rec_slot_duration_sec }},
+            token_expiration_sec: {{ token_expiration_sec }},
             uploads_per_mix: {{ uploads_per_mix }},
-            max_upload_size: {{ max_upload_size }},
+            max_upload_size_bytes: {{ max_upload_size_bytes }},
             last_mix_id: {{ last_mix_id }},
             mix_epoch: {{ mix_epoch }},
             start_window: 15,
@@ -192,7 +192,7 @@
             els.slotDurationVal1.textContent = config.time_slot_duration_sec;
             els.slotDurationVal2.textContent = config.time_slot_duration_sec;
             els.slotDurationVal3.textContent = config.time_slot_duration_sec;
-            els.recSlotDuration.textContent = config.rec_slot_duration_sec;
+            els.recSlotDuration.textContent = config.token_expiration_sec;
         }
         function getIntUnixTime() {
             return Math.floor(Date.now() / 1000);
@@ -427,7 +427,7 @@
                 mediaRecorder.onstop = () => {
                     if (recordedChunks.length > 0) {
                         localBlob = new Blob(recordedChunks, { type: 'audio/webm' });
-                        if (localBlob.size > config.max_upload_size) addStatusMessage(`Warning: Recording size (${(localBlob.size/1024/1024).toFixed(1)}MB) exceeds limit.`, 'warning');
+                        if (localBlob.size > config.max_upload_size_bytes) addStatusMessage(`Warning: Recording size (${(localBlob.size/1024/1024).toFixed(1)}MB) exceeds limit.`, 'warning');
                         URL.revokeObjectURL(localURL);
                         localURL = URL.createObjectURL(localBlob);
                         els.localAudioPlayer.src = localURL;
@@ -552,8 +552,8 @@
         els.fileInput.addEventListener('change', (e) => {
             const file = e.target.files[0];
             if (!file) return;
-            if (file.size > config.max_upload_size) {
-                addStatusMessage(`Error: audio file size (${convertToMB(file.size)}) exceeds max limit: ${convertToMB(config.max_upload_size)}.`, 'error');
+            if (file.size > config.max_upload_size_bytes) {
+                addStatusMessage(`Error: audio file size (${convertToMB(file.size)}) exceeds max limit: ${convertToMB(config.max_upload_size_bytes)}.`, 'error');
                 els.fileInput.value = '';
                 return;
             }
