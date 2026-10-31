@@ -80,7 +80,7 @@ There are many tunable constants in the `Const` object of `mix_worker.py`. Some 
 A Python server based on the FastAPI module. It serves an HTML/JS webpage to browser clients which allows users
 to listen to a recorded chant and to upload their own recordings to the server to be mixed into a chorus.
 
-`main.py` synchronizes with universal time. Chants are repeated every ´time_slot_duration_sec´ so their duration
+`main.py` synchronizes with universal time. Chants are repeated every `time_slot_duration_sec` so their duration
 must be shorter (by at least 5 seconds) to allow for short delays in browser audio timing and to give users chanting
 along with the recording a chance to pause between rounds.
 
@@ -113,9 +113,9 @@ so that users will know that their contribution is included in the mix even if t
 in the chorus. Although IP addresses are hidden from users, they are used to identify the countries associated with
 contributions so that all users can know which countries contributed to the mix.
 
-When a mix fails to complete within `mix_timeout_sec`, the mix is discarded and an error is logged.
+When a mix fails to complete within `mix_timeout_sec` the mix is discarded and an error is logged.
 
-Some tunable constants in the `Const` object of `main.py`.
+Some tunable constants in the `Const` object of `main.py`:
 
 | Constant | Suggested | Comment |
 |----------|:---------:|---------|
