@@ -8,35 +8,24 @@
 </head>
 <body>
     <div class="container">
-        <!-- Background Chant Player -->
         <div class="chant-player-section">
             <h2 class="section-title">Collective Chant</h2>
-            <div style="position: relative; margin-bottom: 10px;">
-                <div class="chanting-status">
-                    <span id="chanting-status-text">Click the <i>Unmute</i> button to hear the collective chant.</span>
-                    <button class="btn btn-unmute" id="btn-unmute" disabled>
-                        🔊 Unmute
-                    </button>
-                </div>
-                <audio id="chant-audio-player">
-                    This browser does not support audio.
-                </audio>
+            <div class="chanting-status">
+                <span id="chanting-status-text">Click the <i>Unmute</i> button to hear the collective chant.</span>
+                <button class="btn btn-unmute" id="btn-unmute" disabled>
+                    🔊 Unmute
+                </button>
+            </div>
+            <audio id="chant-audio-player">
+                This browser does not support audio.
+            </audio>
+        </div>
+        <div class="chant-text-section">
+            <h2 class="section-title">Chant Text</h2>
+            <div class="chant-text-block">
+                <div class="chant-text" id="chant-stanzas">Test.</div>
             </div>
         </div>
-        <!-- Main Timers -->
-        <div class="main-display">
-            <div class="timer-card">
-                <div class="timer-label">Next chant starts in</div>
-                <div class="timer-value" id="time_slot_remaining">&nbsp;</div>
-                <div class="timer-unit">seconds</div>
-            </div>
-            <div class="timer-card">
-                <div class="timer-label">Global recording uploads</div>
-                <div class="timer-value" id="upload_count">&nbsp;</div>
-                <div class="timer-unit">out of <span id="uploads_per_mix">0</span> per mix cycle</div>
-            </div>
-        </div>
-        <!-- Recording Controls -->
         <div class="recording-section">
             <h2 class="section-title">Recording Controls</h2>
             <div class="recording-status">
@@ -68,14 +57,6 @@
         </div>
         <div class="two-column-layout">
             <div class="uniform-section">
-                <h2 class="section-title">Notifications</h2>
-                <div class="list-container" id="status-messages">
-                    <div class="status-item status-info">
-                        Connecting to server...
-                    </div>
-                </div>
-            </div>
-            <div class="uniform-section">
                 <h2 class="section-title">Available Upload Tokens</h2>
                 <div class="list-container" id="tokens-list">
                     <div class="token-item token-info">
@@ -84,8 +65,24 @@
                 </div>
             </div>
             <div class="uniform-section">
-                <h2 class="section-title">Instructions</h2>
+                <h2 class="section-title">Notifications</h2>
                 <div class="list-container" id="status-messages">
+                    <div class="status-item status-info">
+                        Connecting to server...
+                    </div>
+                </div>
+            </div>
+            <div class="uniform-section">
+                <h2 class="section-title">Chant Mix Contributors</h2>
+                <div class="list-container" id="contributors-list">
+                    <div class="token-item token-info">
+                        Waiting for chant mix...
+                    </div>
+                </div>
+            </div>
+            <div class="uniform-section">
+                <h2 class="section-title">Instructions</h2>
+                <div class="list-container" id="instructions">
                     <p>
                         <strong>Unmute:</strong> Click the <i>Unmute</i> button to hear the collective chant, starting with the next chant.
                         It cycles every <span id="slot-duration-val-1">&nbsp;</span>s.
@@ -115,18 +112,11 @@
                     </p>
                 </div>
             </div>
-            <div class="uniform-section">
-                <h2 class="section-title">Chant Mix Contributors</h2>
-                <div class="list-container" id="contributors-list">
-                    <div class="token-item token-info">
-                        Waiting for chant mix...
-                    </div>
-                </div>
-            </div>
         </div>
     </div>
     <script>
         const config = {
+            chant_stanzas: {{ chant_stanzas | tojson }},
             time_slot_duration_sec: {{ time_slot_duration_sec }},
             token_expiration_sec: {{ token_expiration_sec }},
             uploads_per_mix: {{ uploads_per_mix }},
@@ -160,13 +150,11 @@
         let currentMixId = null;
         const els = {
             chantingStatusText: document.getElementById('chanting-status-text'),
-            timeSlotRemaining: document.getElementById('time_slot_remaining'),
-            uploadsPerMix: document.getElementById('uploads_per_mix'),
-            uploadCount: document.getElementById('upload_count'),
             slotDurationVal1: document.getElementById('slot-duration-val-1'),
             slotDurationVal2: document.getElementById('slot-duration-val-2'),
             slotDurationVal3: document.getElementById('slot-duration-val-3'),
             recSlotDuration: document.getElementById('rec-slot-duration'),
+            chantStanzas: document.getElementById('chant-stanzas'),
             recordingIndicator: document.getElementById('recording-indicator'),
             recordingStatusText: document.getElementById('recording-status-text'),
             btnStart: document.getElementById('btn-start'),
@@ -188,7 +176,7 @@
             return `${Math.floor(size / 1024).toFixed(1)} KB`;
         }
         function initDisplay() {
-            els.uploadsPerMix.textContent = config.uploads_per_mix;
+            els.chantStanzas.textContent = config.chant_stanzas;
             els.slotDurationVal1.textContent = config.time_slot_duration_sec;
             els.slotDurationVal2.textContent = config.time_slot_duration_sec;
             els.slotDurationVal3.textContent = config.time_slot_duration_sec;
@@ -217,19 +205,17 @@
                         if (isWaiting) startChanting(refChantURL);
                         else startChanting(mixChantURL);
                     }
-                    else els.chantingStatusText.textContent = `Chant starts in ${times.timeSlotRemaining}s unless muted.`;
+                    else els.chantingStatusText.textContent = `Next chant cycle starts in ${times.timeSlotRemaining}s unless muted.`;
                 }
                 else {
                     currentMix = currentMixId;
                     if (currentMixId === null) currentMix = 'reference chant'
-                    els.chantingStatusText.textContent = `New chant mix follows ${config.uploads_per_mix} global recording uploads. Current mix: ${currentMix}`;
+                    els.chantingStatusText.textContent = `New chant mix will follow ${config.uploads_per_mix - uploadCount} more (out of ${config.uploads_per_mix}) global recording uploads. Current mix: ${currentMix}`;
                 }
             }
             isWindow = times.timeSlotRemaining <= config.start_window;
             isntToken = activeTokens.length === 0;
             isntLocalBlob = localBlob === null;
-            els.timeSlotRemaining.textContent = times.timeSlotRemaining;
-            els.uploadCount.textContent = uploadCount;
             if (isWaiting) {
                 if (isWindow) {
                     els.recordingIndicator.classList.add('ready');

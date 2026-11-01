@@ -9,7 +9,6 @@ from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import BackgroundTasks
 from starlette.requests import Request
-from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from streaming_form_data import StreamingFormDataParser
 from streaming_form_data.targets import ValueTarget
@@ -477,6 +476,7 @@ def create_app():
     async def root(request: Request):
         context = {
             "request": request,
+            "chant_stanzas": Chant.ref_stanzas,
             "time_slot_duration_sec": Const.time_slot_duration_sec,
             "token_expiration_sec": Const.token_expiration_sec,
             "uploads_per_mix": Const.uploads_per_mix,

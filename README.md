@@ -44,15 +44,16 @@ removed. Polling resumes.
 
 Automatic Speech Recognition (ASR) is used to ensure that uploaded audios are faithful recitations of the reference audio
 at `ref_orig_path`. To avoid ASR degredation, audios are split into stanzas that should be less than 30 seconds in duration,
-as determined by gaps of (near) silence between them. After splitting, stanzas are compressed/stretched
+as determined by gaps (`min_gap_ms`) of near silence between them. After splitting, stanzas are compressed/stretched
 to match the reference audio, then transcribed using ASR and checked for accuracy relative to the reference text
 in `ref_stanzas_path` (which uses blank lines to separate stanzas — the number of which must match the number found
-by splitting the audio), then reassembled with a fixed gap of silence between them in preparation for the mix.
+by splitting the audio), then reassembled with a gap of silence (`stanza_gap_ms`) between them in preparation for the mix.
 
 When `mix_worker.py` starts, the original reference audio `ref_orig_path` (which can be any type recognized by ffmpeg,
-such as *.mp3 or *.webm) is split then reassembled with both fixed silence gaps between stanzas and with 3-tick count-ins
-between them (to help chanters synchronize with it when recording audios for upload). The former is stored in
-`ref_audio_path` and the latter is stored in `ref_ticks_path`, both for use by `main.py`.
+such as *.mp3 or *.webm) is split then reassembled with both silence gaps (`stanza_gap_ms`) between stanzas and seperately
+with 3-tick count-ins between them. The former is stored in `ref_audio_path` and the latter is stored in `ref_ticks_path`,
+both for use by `main.py` — the former before the first mix is created and the latter to help chanters synchronize with
+the reference when recording audios for upload.
 
 ASR is done by the module `faster_whisper`, which automatically downloads from HuggingFace and caches a language model
 when `mix_worker.py` is first run. (There will be an extra delay during the first run and a warning if you do not have
@@ -75,6 +76,7 @@ There are many tunable constants in the `Const` object of `mix_worker.py`. Some 
 |max_stanza_word_errors | 1 | If any single stanza exceeds this word error limit, the entire audio is rejected.|
 |ratio_tolerance | 0.1 | Stanzas that must be stretched/compressed more than a factor of 1 +/- this value are silenced.|
 |max_stanza_duration_errors | 1 | If more than this number of stanzas are silenced, the entire audio is rejected.|
+|num_ref_audio_in_mix | 1 | Number of copies of the reference audio to add to mixes for stability. Should be >= 1 |
 
 ### `main.py`
 A Python server based on the FastAPI module. It serves an HTML/JS webpage to browser clients which allows users
@@ -126,3 +128,6 @@ Some tunable constants in the `Const` object of `main.py`:
 |uploads_per_mix | 2 | Set large enough to provide anonymity in the mix chorus.|
 |words_per_token | 3 | Number of BIP39 words per token.|
 |mix_timeout_sec | 300 | Maximum time allowed for a mix to complete.|
+
+### `index.html`
+
