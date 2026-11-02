@@ -476,7 +476,7 @@ def create_app():
     async def root(request: Request):
         context = {
             "request": request,
-            "chant_stanzas": Chant.ref_stanzas,
+            "chant_text": Chant.ref_stanzas,
             "time_slot_duration_sec": Const.time_slot_duration_sec,
             "token_expiration_sec": Const.token_expiration_sec,
             "uploads_per_mix": Const.uploads_per_mix,

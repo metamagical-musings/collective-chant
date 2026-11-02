@@ -131,3 +131,4 @@ Some tunable constants in the `Const` object of `main.py`:
 
 ### `index.html`
 
+The webpage served to connected (via WebSockets) browser clients.

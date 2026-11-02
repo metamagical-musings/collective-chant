@@ -20,49 +20,41 @@
                 This browser does not support audio.
             </audio>
         </div>
-        <div class="chant-text-section">
-            <h2 class="section-title">Chant Text</h2>
-            <div class="chant-text-block">
-                <div class="chant-text" id="chant-stanzas">Test.</div>
-            </div>
-        </div>
-        <div class="recording-section">
-            <h2 class="section-title">Recording Controls</h2>
-            <div class="recording-status">
-                <div class="recording-indicator" id="recording-indicator"></div>
-                <span id="recording-status-text">Not recording.</span>
-            </div>
-            <div class="control-buttons">
-                <button class="btn btn-start" id="btn-start" disabled>
-                    <span>▶</span> Start
-                </button>
-                <button class="btn btn-stop" id="btn-stop" disabled>
-                    <span>■</span> Stop
-                </button>
-                <button class="btn btn-play" id="btn-play" disabled>
-                    <span>▶</span> Play
-                </button>
-                <button class="btn btn-save" id="btn-save" disabled>
-                    <span>💾</span> Save
-                </button>
-                <button class="btn btn-load" id="btn-load">
-                    <span>📂</span> Load
-                </button>
-                <button class="btn btn-upload" id="btn-upload" disabled>
-                    <span>⬆</span> Upload
-                </button>
-            </div>
-            <input type="file" id="file-input" class="file-input" accept=".webm">
-            <audio id="local-audio-player" controls style="display: none;"></audio>
-        </div>
         <div class="two-column-layout">
             <div class="uniform-section">
-                <h2 class="section-title">Available Upload Tokens</h2>
-                <div class="list-container" id="tokens-list">
-                    <div class="token-item token-info">
-                        Waiting for tokens...
-                    </div>
+                <h2 class="section-title">Chant Text</h2>
+                <div class="chant-text-container">
+                    <div class="chant-block" id="chant-text">Waiting for chant text...</div>
                 </div>
+            </div>
+            <div class="uniform-section">
+            <h2 class="section-title">Recording Controls</h2>
+                <div class="recording-status">
+                    <div class="recording-indicator" id="recording-indicator"></div>
+                    <span id="recording-status-text">Not recording.</span>
+                </div>
+                <div class="control-buttons">
+                    <button class="btn btn-start" id="btn-start" disabled>
+                        <span>▶</span> Start
+                    </button>
+                    <button class="btn btn-stop" id="btn-stop" disabled>
+                        <span>■</span> Stop
+                    </button>
+                    <button class="btn btn-play" id="btn-play" disabled>
+                        <span>▶</span> Play
+                    </button>
+                    <button class="btn btn-save" id="btn-save" disabled>
+                        <span>💾</span> Save
+                    </button>
+                    <button class="btn btn-load" id="btn-load">
+                        <span>📂</span> Load
+                    </button>
+                    <button class="btn btn-upload" id="btn-upload" disabled>
+                        <span>⬆</span> Upload
+                    </button>
+                </div>
+                <input type="file" id="file-input" class="file-input" accept=".webm">
+                <audio id="local-audio-player" controls style="display: none;"></audio>
             </div>
             <div class="uniform-section">
                 <h2 class="section-title">Notifications</h2>
@@ -73,10 +65,10 @@
                 </div>
             </div>
             <div class="uniform-section">
-                <h2 class="section-title">Chant Mix Contributors</h2>
-                <div class="list-container" id="contributors-list">
+                <h2 class="section-title">Available Upload Tokens</h2>
+                <div class="list-container" id="tokens-list">
                     <div class="token-item token-info">
-                        Waiting for chant mix...
+                        Waiting for tokens...
                     </div>
                 </div>
             </div>
@@ -112,11 +104,19 @@
                     </p>
                 </div>
             </div>
+            <div class="uniform-section">
+                <h2 class="section-title">Chant Mix Contributors</h2>
+                <div class="list-container" id="contributors-list">
+                    <div class="token-item token-info">
+                        Waiting for chant mix...
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
     <script>
         const config = {
-            chant_stanzas: {{ chant_stanzas | tojson }},
+            chant_text: {{ chant_text | tojson }},
             time_slot_duration_sec: {{ time_slot_duration_sec }},
             token_expiration_sec: {{ token_expiration_sec }},
             uploads_per_mix: {{ uploads_per_mix }},
@@ -154,7 +154,7 @@
             slotDurationVal2: document.getElementById('slot-duration-val-2'),
             slotDurationVal3: document.getElementById('slot-duration-val-3'),
             recSlotDuration: document.getElementById('rec-slot-duration'),
-            chantStanzas: document.getElementById('chant-stanzas'),
+            chantText: document.getElementById('chant-text'),
             recordingIndicator: document.getElementById('recording-indicator'),
             recordingStatusText: document.getElementById('recording-status-text'),
             btnStart: document.getElementById('btn-start'),
@@ -176,7 +176,7 @@
             return `${Math.floor(size / 1024).toFixed(1)} KB`;
         }
         function initDisplay() {
-            els.chantStanzas.textContent = config.chant_stanzas;
+            els.chantText.textContent = config.chant_text;
             els.slotDurationVal1.textContent = config.time_slot_duration_sec;
             els.slotDurationVal2.textContent = config.time_slot_duration_sec;
             els.slotDurationVal3.textContent = config.time_slot_duration_sec;
