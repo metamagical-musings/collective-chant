@@ -377,6 +377,7 @@ def create_app():
             Util.log(f"Client #{client_id} connected.", 2, "[WS]")
             now = time.time() # float
             await websocket.send_json({"type": "sync", "client_id": client_id, "now": now})
+            await WS.broadcast("bytes", Chant.ref_ticks, client_id)
             await WS.broadcast("bytes", Chant.ref_audio, client_id)
             async def sender():
                 while True:

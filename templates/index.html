@@ -16,9 +16,6 @@
                     🔊 Unmute
                 </button>
             </div>
-            <audio id="chant-audio-player">
-                This browser does not support audio.
-            </audio>
         </div>
         <div class="two-column-layout">
             <div class="uniform-section">
@@ -34,8 +31,8 @@
                     <span id="recording-status-text">Not recording.</span>
                 </div>
                 <div class="control-buttons">
-                    <button class="btn btn-start" id="btn-start" disabled>
-                        <span>▶</span> Start
+                    <button class="btn btn-rec" id="btn-rec" disabled>
+                        <span>▶</span> Rec
                     </button>
                     <button class="btn btn-stop" id="btn-stop" disabled>
                         <span>■</span> Stop
@@ -54,7 +51,6 @@
                     </button>
                 </div>
                 <input type="file" id="file-input" class="file-input" accept=".webm">
-                <audio id="local-audio-player" controls style="display: none;"></audio>
             </div>
             <div class="uniform-section">
                 <h2 class="section-title">Notifications</h2>
@@ -77,16 +73,15 @@
                 <div class="list-container" id="instructions">
                     <p>
                         <strong>Unmute:</strong> Click the <i>Unmute</i> button to hear the collective chant, starting with the next chant.
-                        It cycles every <span id="slot-duration-val-1">&nbsp;</span>s.
+                        It cycles every <span id="slot-duration-val">&nbsp;</span>s.
                     </p>
                     <p>
                         <strong>Recording:</strong>
                         <div style="padding-left: 20px;">
                             <ul>
-                            <li>Press the <i>Start</i> button to begin recording at the beginning of the next chant.</li>
-                            <li>During live recording, the original reference chant is played rather than the collective chant mixed from uploads, so that you can synchronize your voice with it.</li>
-                            <li>Recording stops automatically after <span id="slot-duration-val-2">0</span>s, which is a few seconds longer than the chant, if not stopped before then by clicking the <i>Stop</i> button.</li>
-                            <li>Allow live recording to continue until it stops automatically, maintaining silence after the reference chant ends, to ensure inclusion in the next mix. The uploaded recording's time duration must not exceed <span id="slot-duration-val-3">&nbsp;</span>s to help filter out invalid recordings.</li>
+                            <li>Click the <i>Rec</i> button to begin recording.</li>
+                            <li>During live recording, the original reference chant is played with 3 ticks between stanzas rather than the collective chant mixed from uploads, so that you can synchronize your voice with it.</li>
+                            <li>Click the <i>Stop</i> button to stop recording or playback.</li>
                             </ul>
                         </div>
                     </p>
@@ -123,41 +118,37 @@
             max_upload_size_bytes: {{ max_upload_size_bytes }},
             last_mix_id: {{ last_mix_id }},
             mix_epoch: {{ mix_epoch }},
-            start_window: 15,
             expiration_zone: 5
         };
         let uploadCount = 0;
         let uploads = [];
-        let isClicked = false;
+        let isClicked = false; // Audio will not play without page interaction such as a clicking on the Unmute button
         let isReady = false;
         let isChanting = false;
-        let isUnmuted = false;
-        let refChantURL = null;
-        let mixChantURL = null;
-        let isWindow = false;
-        let isWaiting = false;
         let isRecording = false;
-        let isStopTrigger = false;
-        let isUploading = false;
         let isPlaying = false;
+        let isUploading = false;
         let ws = null;
+        let refAudioPlayer = null;
+        let refAudioURL = null;
+        let chantAudioPlayer = null;
+        let chantMixURL = null;
         let mediaRecorder = null;
         let recordedChunks = [];
-        let localBlob = null;
+        let localAudioPlayer = null;
         let localURL = null;
+        let localBlob = null;
         let activeTokens = []; // Array of { token, expires_at }
         let currentContributors = {}; // Array of { token, country_code }
-        let currentMixId = null;
+        let currentMixId = 0;
         const els = {
             chantingStatusText: document.getElementById('chanting-status-text'),
-            slotDurationVal1: document.getElementById('slot-duration-val-1'),
-            slotDurationVal2: document.getElementById('slot-duration-val-2'),
-            slotDurationVal3: document.getElementById('slot-duration-val-3'),
+            slotDurationVal: document.getElementById('slot-duration-val'),
             recSlotDuration: document.getElementById('rec-slot-duration'),
             chantText: document.getElementById('chant-text'),
             recordingIndicator: document.getElementById('recording-indicator'),
             recordingStatusText: document.getElementById('recording-status-text'),
-            btnStart: document.getElementById('btn-start'),
+            btnRec: document.getElementById('btn-rec'),
             btnStop: document.getElementById('btn-stop'),
             btnSave: document.getElementById('btn-save'),
             btnLoad: document.getElementById('btn-load'),
@@ -168,18 +159,30 @@
             tokensList: document.getElementById('tokens-list'),
             contributorsList: document.getElementById('contributors-list'),
             statusMessages: document.getElementById('status-messages'),
-            chantAudioPlayer: document.getElementById('chant-audio-player'),
-            localAudioPlayer: document.getElementById('local-audio-player')
         };
         function convertToMB(size) {
             if (size > 1024 * 1024) return `${Math.floor(size / 1024 / 1024).toFixed(1)} MB`;
             return `${Math.floor(size / 1024).toFixed(1)} KB`;
         }
+        function initAudio() {
+            refAudioPlayer = new Audio();
+            refAudioPlayer.addEventListener('ended', () => {
+                muteChant(false);
+            });
+            chantAudioPlayer = new Audio();
+            chantAudioPlayer.addEventListener('ended', () => {
+                isChanting = false; updateDisplay();
+            });
+            muteChant(true)
+            localAudioPlayer = new Audio();
+            localAudioPlayer.addEventListener('ended', () => {
+                muteChant(false);
+                isPlaying = false; updateDisplay();
+            });
+        }
         function initDisplay() {
             els.chantText.textContent = config.chant_text;
-            els.slotDurationVal1.textContent = config.time_slot_duration_sec;
-            els.slotDurationVal2.textContent = config.time_slot_duration_sec;
-            els.slotDurationVal3.textContent = config.time_slot_duration_sec;
+            els.slotDurationVal.textContent = config.time_slot_duration_sec;
             els.recSlotDuration.textContent = config.token_expiration_sec;
         }
         function getIntUnixTime() {
@@ -197,57 +200,31 @@
         }
         function updateDisplay() {
             const times = calculateTimes(getIntUnixTime());
-            els.btnUnmute.textContent = isUnmuted ? '🔇 Mute' : '🔊 Unmute';
             els.btnUnmute.disabled = !isReady;
             if (isReady && isClicked) {
                 if (!isChanting) {
-                    if (times.timeSlotRemaining === config.time_slot_duration_sec) {
-                        if (isWaiting) startChanting(refChantURL);
-                        else startChanting(mixChantURL);
-                    }
+                    if (times.timeSlotRemaining === config.time_slot_duration_sec) startChanting(chantMixURL);
                     else els.chantingStatusText.textContent = `Next chant cycle starts in ${times.timeSlotRemaining}s unless muted.`;
                 }
                 else {
-                    currentMix = currentMixId;
-                    if (currentMixId === null) currentMix = 'reference chant'
-                    els.chantingStatusText.textContent = `New chant mix will follow ${config.uploads_per_mix - uploadCount} more (out of ${config.uploads_per_mix}) global recording uploads. Current mix: ${currentMix}`;
+                    els.chantingStatusText.textContent = `New chant mix will follow ${config.uploads_per_mix - uploadCount} more (out of ${config.uploads_per_mix}) global recording uploads.`;
                 }
             }
-            isWindow = times.timeSlotRemaining <= config.start_window;
             isntToken = activeTokens.length === 0;
             isntLocalBlob = localBlob === null;
-            if (isWaiting) {
-                if (isWindow) {
-                    els.recordingIndicator.classList.add('ready');
-                    els.chantingStatusText.textContent = `Recording starts in ${times.timeSlotRemaining}s.`;
-                }
-                else {
-                    isWaiting = false;
-                    isRecording = true;
-                    startRecording();
-                }
-            }
             if (isRecording) {
-                if (isStopTrigger && !isWindow) els.btnStop.click();
-                else {
-                    if (!isStopTrigger && isWindow) isStopTrigger = true;
-                    els.recordingIndicator.classList.remove('ready');
-                    els.recordingIndicator.classList.add('active');
-                    els.recordingStatusText.textContent = `Recording in progress, ends in ${times.timeSlotRemaining}s.`;
-                }
-            }
-            if (!isWaiting && !isRecording) {
-                els.recordingIndicator.classList.remove('ready', 'active');
-                const prefix = `Not recording. <I>Start</I> button can be pressed `
-                if (isWindow) els.recordingStatusText.innerHTML = `${prefix} now.`;
-                else els.recordingStatusText.innerHTML = `${prefix} in ${times.timeSlotRemaining - config.start_window}s.`;
+                els.recordingIndicator.classList.add('active');
+                els.recordingStatusText.textContent = `Recording in progress.`;
+            } else {
+                els.recordingIndicator.classList.remove('active');
+                els.recordingStatusText.innerHTML = `Press <I>Rec</I> to begin recording.`;
             }
             if (isPlaying) els.btnPlay.textContent = '⏸ Pause';
             else els.btnPlay.textContent = '▶ Play';
-            isBusy = isWaiting || isRecording || isPlaying || isUploading
-            els.btnStart.disabled = !isWindow || isBusy;
-            els.btnStop.disabled = !(isWaiting || isRecording || isPlaying) || isUploading;
-            els.btnPlay.disabled = isntLocalBlob || isWaiting || isRecording || isUploading;
+            isBusy = isRecording || isPlaying || isUploading
+            els.btnRec.disabled = isBusy;
+            els.btnStop.disabled = !(isRecording || isPlaying) || isUploading;
+            els.btnPlay.disabled = isntLocalBlob || isRecording || isUploading;
             els.btnSave.disabled = isntLocalBlob || isBusy;
             els.btnLoad.disabled = isBusy;
             els.btnUpload.disabled = isntToken || isntLocalBlob || isBusy;
@@ -320,7 +297,7 @@
             ws.onopen = () => { };
             ws.onmessage = (event) => {
                 try {
-                    if (typeof event.data !== 'string') storeChant(event.data);
+                    if (typeof event.data !== 'string') storeAudio(event.data);
                     else handleMessage(JSON.parse(event.data));
                 } catch (e) { console.error('Error parsing server message:', e); }
             };
@@ -365,44 +342,53 @@
                     console.log('Unknown message type:', data.type);
             }
         }
-        function storeChant(blob) {
-            URL.revokeObjectURL(mixChantURL);
-            if (!refChantURL) {
-                refChantURL = URL.createObjectURL(blob);
-                els.chantAudioPlayer.src = refChantURL;
-                els.chantAudioPlayer.load(); isReady = true;
-                els.chantAudioPlayer.pause(); isChanting = false;
-                els.chantAudioPlayer.muted = !isUnmuted
-                addStatusMessage(`Reference chant dowloaded: ${convertToMB(blob.size)}.`, 'success');
-                updateDisplay();
-            }
-            else addStatusMessage(`Mix ${currentMixId} dowloaded: ${convertToMB(blob.size)}.`, 'success');
-            mixChantURL = URL.createObjectURL(blob);
-        }
         function checkAudioSupport() {
-            if (!!els.localAudioPlayer.canPlayType && !!els.chantAudioPlayer.canPlayType) return true;
-            const response = audio.canPlayType(type);
-            return response === 'probably' || response === 'maybe';
+            if (!chantAudioPlayer.canPlayType) return false;
+            const response = chantAudioPlayer.canPlayType('audio/webm; codecs="opus"');
+            if (response === 'probably' || response === 'maybe') return true;
             return false;
         }
+        function storeAudio(blob) {
+            if (!refAudioURL) {
+                refAudioURL = URL.createObjectURL(blob);
+                refAudioPlayer.src = refAudioURL;
+                refAudioPlayer.load();
+                addStatusMessage(`Reference audio dowloaded: ${convertToMB(blob.size)}.`, 'success');
+                return
+            }
+            URL.revokeObjectURL(chantMixURL);
+            chantMixURL = URL.createObjectURL(blob);
+            isReady = true;
+            addStatusMessage(`Mix ${currentMixId} dowloaded: ${convertToMB(blob.size)}.`, 'success');
+        }
         function startChanting(url) {
-            //console.log(`start chanting with ${url}`);
-            isChanting = true;
-            els.chantAudioPlayer.src = url;
-            els.chantAudioPlayer.load();
-            els.chantAudioPlayer.play().catch((e) => {
+            chantAudioPlayer.src = url;
+            chantAudioPlayer.load();
+            chantAudioPlayer.play().catch((e) => {
                 console.error(e.name)
                 if (e.name === 'AbortError') return; // Ignore power-saving pause; resume will be handled by visibilitychange
-                addStatusMessage(`Audio player error: ${e}.`, 'error');
+                addStatusMessage(`Chant udio player error: ${e}.`, 'error');
              });
-             updateDisplay();
+            addStatusMessage(`Current mix playing: ${currentMixId}`, 'info');
+            isChanting = true; updateDisplay();
+        }
+        function muteChant(mute) {
+            chantAudioPlayer.muted = mute;
+            els.btnUnmute.textContent = mute ? '🔊 Unmute' : '🔇 Mute';
+        }
+        function startRefAudio() {
+            refAudioPlayer.play().catch((e) => {
+                console.error(e.name)
+                if (e.name === 'AbortError') return; // Ignore power-saving pause; resume will be handled by visibilitychange
+                addStatusMessage(`Reference audio player error: ${e}.`, 'error');
+            });
+            addStatusMessage('Reference audio playing', 'info');
         }
         async function startRecording() {
             if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
                 addStatusMessage("Microphone access is blocked.", 'error');
                 console.error("MediaDevices API not supported in this context.");
-                isRecording = false;
-                updateDisplay();
+                isRecording = false; updateDisplay();
                 return;
             }
             try {
@@ -416,14 +402,13 @@
                         if (localBlob.size > config.max_upload_size_bytes) addStatusMessage(`Warning: Recording size (${(localBlob.size/1024/1024).toFixed(1)}MB) exceeds limit.`, 'warning');
                         URL.revokeObjectURL(localURL);
                         localURL = URL.createObjectURL(localBlob);
-                        els.localAudioPlayer.src = localURL;
+                        localAudioPlayer.src = localURL;
                     }
                 };
                 mediaRecorder.start();
             } catch (err) {
-                isRecording = false
+                isRecording = false; updateDisplay();
                 addStatusMessage(`Microphone access denied: ${err.message}`, 'error');
-                updateDisplay();
                 console.error(err);
             }
         }
@@ -435,8 +420,7 @@
         }
         async function uploadRecording(blob) {
             function done() {
-                isUploading = false;
-                updateDisplay();
+                isUploading = false; updateDisplay();
             }
             const duration_sec = await getDuration(blob);
             if (duration_sec > config.time_slot_duration_sec) {
@@ -481,44 +465,38 @@
             catch (e) { addStatusMessage(`${e.message}`, 'error'); }
             finally { done(); }
         }
-        els.chantAudioPlayer.addEventListener('ended', () => {
-            isChanting = false;
-            updateDisplay();
-        });
-        els.localAudioPlayer.addEventListener('ended', () => {
-            isPlaying = false;
-            updateDisplay();
-        });
         els.btnUnmute.addEventListener('click', () => {
-            isUnmuted = !isUnmuted;
-            els.chantAudioPlayer.muted = !isUnmuted;
-            updateDisplay();
+            muteChant(!chantAudioPlayer.muted);
         });
-        els.btnStart.addEventListener('click', () => {
-            isWaiting = true; updateDisplay();
+        els.btnRec.addEventListener('click', () => {
+            muteChant(true);
+            startRecording();
+            startRefAudio();
+            isRecording = true; updateDisplay();
         });
         els.btnStop.addEventListener('click', () => {
-            if (isWaiting) isWaiting = false;
             if (isRecording) {
                 isRecording = false;
-                isStopTrigger = false;
                 if (mediaRecorder) {
                     mediaRecorder.stop();
                     mediaRecorder.stream.getTracks().forEach(track => track.stop());
                 }
+                refAudioPlayer.pause();
+                refAudioPlayer.currentTime = 0;
             }
             if (isPlaying) {
                 isPlaying = false;
-                els.localAudioPlayer.pause();
-                els.localAudioPlayer.currentTime = 0;
+                localAudioPlayer.pause();
+                localAudioPlayer.currentTime = 0;
             }
+            muteChant(false);
             updateDisplay();
         });
         els.btnPlay.addEventListener('click', () => {
-            if (els.localAudioPlayer.paused) {
-                els.localAudioPlayer.play().then(() => { isPlaying = true; }).catch(e => { addStatusMessage("Playback failed: " + e.message, 'error'); });
+            if (localAudioPlayer.paused) {
+                localAudioPlayer.play().then(() => { muteChant(true); isPlaying = true; }).catch(e => { addStatusMessage("Playback failed: " + e.message, 'error'); });
             } else {
-                els.localAudioPlayer.pause();
+                localAudioPlayer.pause();
                 isPlaying = false;
             }
             updateDisplay();
@@ -527,7 +505,7 @@
             if (!localURL) return;
             const a = document.createElement('a');
             a.href = localURL;
-            a.download = `chant_${Date.now()}.webm`;
+            a.download = `chant_${getIntUnixTime()}.webm`;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
@@ -548,7 +526,7 @@
                 localBlob = new Blob([event.target.result], { type: file.type });
                 URL.revokeObjectURL(localURL);
                 localURL = URL.createObjectURL(localBlob);
-                els.localAudioPlayer.src = localURL;
+                localAudioPlayer.src = localURL;
                 addStatusMessage(`Audio file successfully loaded: ${file.name}`, 'success');
             };
             reader.readAsArrayBuffer(file);
@@ -563,13 +541,14 @@
             uploadRecording(localBlob);
         });
         window.addEventListener('DOMContentLoaded', () => {
-            initDisplay();
+            initAudio();
             if (!checkAudioSupport()) {
                 const msg = 'This browser does not support WebM audio.';
                 els.recordingStatusText.textContent = msg;
                 addStatusMessage(msg, 'error');
                 return;
             }
+            initDisplay();
             const date = new Date(config.mix_epoch * 1000);
             addStatusMessage(`${config.last_mix_id} mixes done since ${date.toLocaleString()}.`, "info")
             connectWebSocket();
@@ -586,13 +565,13 @@
             }, delay);
         });
         document.addEventListener('visibilitychange', () => {
-          if (document.visibilityState === 'visible' && els.chantAudioPlayer.paused && isChanting) {
-            els.chantAudioPlayer.play().catch(() => {});
+          if (document.visibilityState === 'visible') {
+            if (chantAudioPlayer.paused && isChanting) chantAudioPlayer.play().catch(() => {});
+            if (refAudioPlayer.paused && isRecording) refAudioPlayer.play().catch(() => {});
           }
         });
         document.addEventListener('click', () => {
-            isClicked = true;
-            updateDisplay();
+            isClicked = true; updateDisplay();
         }, { once: true });
     </script>
 </body>

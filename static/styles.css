@@ -104,10 +104,6 @@ chanting-status-text {
   background: var(--accent-color);
   animation: pulse 1.5s infinite;
 }
-.recording-indicator.ready {
-  background: var(--warning-color);
-  animation: pulse 1.5s infinite;
-}
 .control-buttons {
   display: flex;
   flex-wrap: wrap;
@@ -139,11 +135,11 @@ chanting-status-text {
   background: #5a7ab8;
   transform: translateY(-2px);
 }
-.btn-start {
+.btn-rec {
   background: var(--success-color);
   color: white;
 }
-.btn-start:hover:not(:disabled) {
+.btn-rec:hover:not(:disabled) {
   background: #40c057;
   transform: translateY(-2px);
 }
