@@ -117,8 +117,8 @@
             uploads_per_mix: {{ uploads_per_mix }},
             max_upload_size_bytes: {{ max_upload_size_bytes }},
             last_mix_id: {{ last_mix_id }},
-            mix_epoch: {{ mix_epoch }},
-            expiration_zone: 5
+            mix_epoch_sec: {{ mix_epoch_sec }},
+            expiration_zone_sec: 5
         };
         let uploadCount = 0;
         let uploads = [];
@@ -248,7 +248,7 @@
             }
             activeTokens.forEach(t => {
                 const remaining = t.expires_at - getIntUnixTime();
-                const isExpiringSoon = remaining <= config.expiration_zone;
+                const isExpiringSoon = remaining <= config.expiration_zone_sec;
                 const isExpired = remaining <= 0;
                 if (isExpired) {
                     removeToken(t.token);
@@ -318,7 +318,7 @@
                     if (serverTimeOffset / 1000 <= 1.0) addStatusMessage(`Client time synchronized with server within 1s.`, 'success');
                     else addStatusMessage(`Client time leads server by ${parseFloat(serverTimeOffset.toFixed(2))}s`, 'warning');
                     break;
-                case 'rec_slot_grant':
+                case 'token_grant':
                     addToken(data.token, data.expires_at);
 //                    addStatusMessage(`Upload token granted. Token expires in ${data.expires_at - getIntUnixTime()}s.`, 'success');
                     break;
@@ -437,7 +437,7 @@
                     i--;
                     continue;
                 }
-                if (remaining <= config.expiration_zone) continue;
+                if (remaining <= config.expiration_zone_sec) continue;
                 token = t.token;
                 removeToken(token);
                 break;
@@ -549,7 +549,7 @@
                 return;
             }
             initDisplay();
-            const date = new Date(config.mix_epoch * 1000);
+            const date = new Date(config.mix_epoch_sec * 1000);
             addStatusMessage(`${config.last_mix_id} mixes done since ${date.toLocaleString()}.`, "info")
             connectWebSocket();
             function update() {

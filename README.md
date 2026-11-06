@@ -130,5 +130,59 @@ Some tunable constants in the `Const` object of `main.py`:
 |mix_timeout_sec | 300 | Maximum time allowed for a mix to complete.|
 
 ### `index.html`
+The webpage served to browser clients.
 
-The webpage served to connected (via WebSockets) browser clients.
+#### Context variables
+The webpage is dynamic, constructed using these context variables:
+
+| Variable | Meaning |
+|----------|---------|
+|chant_text | One line per stanza, stanzas separated by blank lines. |
+|time_slot_duration_sec | See `main.py` section above.|
+|token_expiration_sec | See `main.py` section above.|
+|uploads_per_mix | See `main.py` section above.|
+|max_upload_size_bytes | See `main.py` section above.|
+|last_mix_id | Keeps track of the mix ID, which is the number of mixes since the mix epoch_sec.|
+|mix_epoch_sec | The number of mixes since this time, across server sessions.|
+
+#### Websocket messages
+The server establishes a WebSocket connection with each client to send them audios and these messages, asynchronously:
+
+| Message | Meaning |
+|----------|---------|
+|sync | First message after connection established. Synchronized client clock with server clock. |
+|token_grant | Upload token granted.|
+|upload_count | Current number of global uploads. Reset to 0 when a new mix begins.|
+|mix_initiation | Signal that a new mix has begun, includes mix number.|
+|mix_error | Mix did not complete.|
+|mix_contributors | A dictionary of contributors to the newly completed mix which is also sent, separately.|
+
+#### Layout panels
+
+- **Collective Chant**: Messages about the chant (which plays in the background) and contains an ***Unmute*** button. The chant is muted when the webpage first loads. Clicking the button also serves to disable the autoplay blocking feature.
+
+- **Chant Text**: Transcription of the chant.
+
+- **Notifications**: List of status and possible error messages in reverse chronological order.
+
+- **Instructions**: Help tips about buttons on the page and explanations about token and mix contributor data displayed.
+
+- **Recording Controls**: Buttons controlling local audio recording, playback and loading/uploading (see **Instructions**) along with recording status.
+
+- **Available Upload Tokens**: Granted upload tokens in chronological order including time until expiration.
+
+- **Chant Mix Contributors**: Displays tokens of mix contributors along with their country flags.
+
+#### Audio notes
+
+There are four different audio components that operate in the background.
+
+- The chant player which playes the current mix after playing the reference chant (mix number 0) initially.
+
+- The reference player which plays the reference audio with lead-in ticks for synchronization when recording. There is a short silence at the beginning of this recording to allow for browser delays with audible ticks preceeding each stanza to make it easier for the user to harmonize with the reference chant.
+
+- The local player which plays locally recorded or loaded (from disk) audio.
+
+- The recorder for recording the user while harmonizing with the reference audio. It is recommended to record in a quiet environment and not to touch any part of the computer while recording, aside from clicking on the ***stop*** button. Also, headphones are recommended so that the playing reference audio does not interfere with recording; alternatively, lower the playback volume sufficiently.
+
+The user has the option to save a recording made within the webpage to disk. Once on disk, it could be processed with software such as `audacity` to improve its quality, then loaded back to the recorder for upload to the server. For that matter, recordings can be made by any available recording device while listening to the reference player, then loaded into the webpage. Recordings loaded from disk can be in MP3 or other formats acceptable to `ffmpeg`, which is used by `main.py`.

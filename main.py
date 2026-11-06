@@ -77,23 +77,23 @@ class GetCurrent:
 class Mix:
     upload_count = 0
     mix_id = 0
-    epoch = 0
+    epoch_sec = 0
     mix_id_path = Path(Const.mix_id_path)
     mixes_dir_path = Path(Const.mixes_dir)
     archive_dir_path = Path(Const.archive_dir)
     lock = asyncio.Lock()
     @classmethod
     def save_mix_id(cls):
-        cls.mix_id_path.write_text(json.dumps({"mix_id": cls.mix_id, "epoch": cls.epoch}, indent=2), encoding="utf-8")
+        cls.mix_id_path.write_text(json.dumps({"mix_id": cls.mix_id, "epoch_sec": cls.epoch_sec}, indent=2), encoding="utf-8")
     @classmethod
     def load_mix_id(cls):
         if not cls.mix_id_path.exists():
-            cls.epoch = int(time.time())
+            cls.epoch_sec = int(time.time())
             cls.save_mix_id()
         else:
             data = json.loads(cls.mix_id_path.read_text(encoding="utf-8"))
             cls.mix_id = data["mix_id"]
-            cls.epoch = data["epoch"]
+            cls.epoch_sec = data["epoch_sec"]
     @classmethod
     async def inc_upload_count(cls):
         async with cls.lock: cls.upload_count += 1
@@ -330,7 +330,7 @@ def create_app():
                         if client_dict == None: continue
                         queue = client_dict.get("q")
                         try:
-                            queue.put_nowait({"mode": "json", "packet": { "type": "rec_slot_grant", "token": token, "expires_at": expires_at}})
+                            queue.put_nowait({"mode": "json", "packet": { "type": "token_grant", "token": token, "expires_at": expires_at}})
                             Util.log(f"Granting new token {token} to client #{client}", 2, "[Token]")
                             await TokenStore.grant_token(token)
                         except asyncio.QueueFull: pass
@@ -483,7 +483,7 @@ def create_app():
             "uploads_per_mix": Const.uploads_per_mix,
             "max_upload_size_bytes": Const.max_upload_size_bytes,
             "last_mix_id": Mix.mix_id,
-            "mix_epoch": Mix.epoch,
+            "mix_epoch_sec": Mix.epoch_sec,
         }
         return templates.TemplateResponse(request, "index.html", context)
     @app.get("/favicon.ico", include_in_schema=False)
