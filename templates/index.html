@@ -120,6 +120,7 @@
             max_upload_size_bytes: {{ max_upload_size_bytes }},
             last_mix_id: {{ last_mix_id }},
             mix_epoch_sec: {{ mix_epoch_sec }},
+            sample_rate: {{ sample_rate }},
             expiration_zone_sec: 5
         };
         let uploadCount = 0;
@@ -401,7 +402,17 @@
                 return;
             }
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: false,
+                    audio: true,
+                    audio: {
+                        echoCancellation: false,
+                        autoGainControl: false,
+                        noiseSuppression: true,
+                        channelCount: 1,
+                        sampleRate: config.sample_rate
+                    }
+                });
                 mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus"});
                 recordedChunks = [];
                 mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) { recordedChunks.push(e.data); } };

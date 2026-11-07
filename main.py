@@ -40,6 +40,7 @@ class Const:
     ref_audio_path = MWConst.ref_audio_path
     ref_ticks_path = MWConst.ref_ticks_path
     ref_stanzas_path = MWConst.ref_stanzas_path
+    sample_rate = MWConst.sample_rate
 
 class Util:
     @staticmethod
@@ -484,6 +485,7 @@ def create_app():
             "max_upload_size_bytes": Const.max_upload_size_bytes,
             "last_mix_id": Mix.mix_id,
             "mix_epoch_sec": Mix.epoch_sec,
+            "sample_rate": MWConst.sample_rate
         }
         return templates.TemplateResponse(request, "index.html", context)
     @app.get("/favicon.ico", include_in_schema=False)
