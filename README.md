@@ -142,7 +142,7 @@ The webpage is dynamic, constructed using these context variables:
 |token_expiration_sec | See `main.py` section above.|
 |uploads_per_mix | See `main.py` section above.|
 |max_upload_size_bytes | See `main.py` section above.|
-|last_mix_id | Keeps track of the mix ID, which is the number of mixes since the mix epoch_sec.|
+|last_mix_id | Keeps track of the mix ID, which is the number of mixes since the mix epoch.|
 |mix_epoch_sec | The number of mixes since this time, across server sessions.|
 
 #### Websocket messages

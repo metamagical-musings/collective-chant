@@ -53,18 +53,26 @@
                 <input type="file" id="file-input" class="file-input" accept=".webm">
             </div>
             <div class="uniform-section">
-                <h2 class="section-title">Notifications</h2>
-                <div class="list-container" id="status-messages">
-                    <div class="status-item status-info">
-                        Connecting to server...
-                    </div>
-                </div>
-            </div>
-            <div class="uniform-section">
                 <h2 class="section-title">Available Upload Tokens</h2>
                 <div class="list-container" id="tokens-list">
                     <div class="token-item token-info">
                         Waiting for tokens...
+                    </div>
+                </div>
+            </div>
+            <div class="uniform-section">
+                <h2 class="section-title">Chant Mix Contributors</h2>
+                <div class="list-container" id="contributors-list">
+                    <div class="token-item token-info">
+                        Waiting for chant mix...
+                    </div>
+                </div>
+            </div>
+            <div class="uniform-section">
+                <h2 class="section-title">Notifications</h2>
+                <div class="list-container" id="status-messages">
+                    <div class="status-item status-info">
+                        Connecting to server...
                     </div>
                 </div>
             </div>
@@ -74,22 +82,24 @@
                     <p>
                         <strong>Unmute:</strong> Click the <i>Unmute</i> button to hear the collective chant, starting with the next chant.
                         It cycles every <span id="slot-duration-val">&nbsp;</span>s.
+                        The chant stops until the next chant cycle when recording or playing back your own recording.
                     </p>
                     <p>
                         <strong>Recording:</strong>
-                        <div style="padding-left: 20px;">
-                            <ul>
-                            <li>Click the <i>Rec</i> button to begin recording.</li>
-                            <li>During live recording, the original reference chant is played with 3 ticks between stanzas rather than the collective chant mixed from uploads, so that you can synchronize your voice with it.</li>
-                            <li>Click the <i>Stop</i> button to stop recording or playback.</li>
-                            </ul>
-                        </div>
+                        Click the <i>Rec</i> button to begin recording.
+                        During live recording, the original reference chant is played with lead-in ticks between stanzas so that you can synchronize your voice with it — headphones are recommended.
+                        It is important to maintain silence between stanzas and to record in a quiet environment.
+                        Click the <i>Stop</i> button to stop recording.
                     </p>
                     <p>
-                        <strong>Upload:</strong> Click the <i>Upload</i> button to upload your recording to the server so that it can be included in the next mix.
+                        <strong>Play/Pause/Resume:</strong> You can listen to your own recording, with the option to pause it.
+                        Until playback ends or you click <i>Stop</i>, you cannot record and the chant cannot start again.
                     </p>
                     <p>
-                        <strong>Play/Save/Load:</strong> You can <i>Play</i> your recording, <i>Save</i> it to your local computer and <i>Load</i> it back in later.
+                        <strong>Save/Load:</strong> Click <i>Save</i> to store your own recording on your local computer; click <i>Load</i> to retrieve it later.
+                    </p>
+                    <p>
+                        <strong>Upload:</strong> Click the <i>Upload</i> button to upload your own recording to the server so that it can be included in the next mix.
                     </p>
                     <p>
                         <strong>Available Tokens:</strong> A token is required to upload. One may be granted at the beginning of each chant cycle depending on demand; they expire in <span id="rec-slot-duration">&nbsp;</span>s if not used.
@@ -97,14 +107,6 @@
                     <p>
                         <strong>Chant Mix Contributors:</strong> A list of tokens included in the currently playing chant mix. Contributions by you have a green left-border.
                     </p>
-                </div>
-            </div>
-            <div class="uniform-section">
-                <h2 class="section-title">Chant Mix Contributors</h2>
-                <div class="list-container" id="contributors-list">
-                    <div class="token-item token-info">
-                        Waiting for chant mix...
-                    </div>
                 </div>
             </div>
         </div>
@@ -127,6 +129,7 @@
         let isChanting = false;
         let isRecording = false;
         let isPlaying = false;
+        let isPaused = false;
         let isUploading = false;
         let ws = null;
         let refAudioPlayer = null;
@@ -167,7 +170,6 @@
         function initAudio() {
             refAudioPlayer = new Audio();
             refAudioPlayer.addEventListener('ended', () => {
-                muteChant(false);
             });
             chantAudioPlayer = new Audio();
             chantAudioPlayer.addEventListener('ended', () => {
@@ -176,7 +178,6 @@
             muteChant(true)
             localAudioPlayer = new Audio();
             localAudioPlayer.addEventListener('ended', () => {
-                muteChant(false);
                 isPlaying = false; updateDisplay();
             });
         }
@@ -203,8 +204,8 @@
             els.btnUnmute.disabled = !isReady;
             if (isReady && isClicked) {
                 if (!isChanting) {
-                    if (times.timeSlotRemaining === config.time_slot_duration_sec) startChanting(chantMixURL);
-                    else els.chantingStatusText.textContent = `Next chant cycle starts in ${times.timeSlotRemaining}s unless muted.`;
+                    if (!isPlaying && !isPaused && !isRecording && times.timeSlotRemaining === config.time_slot_duration_sec) startChanting();
+                    else els.chantingStatusText.textContent = `Next chant cycle starts in ${times.timeSlotRemaining}s unless muted or you are recording/playing/pausing your own recording.`;
                 }
                 else {
                     els.chantingStatusText.textContent = `New chant mix will follow ${config.uploads_per_mix - uploadCount} more (out of ${config.uploads_per_mix}) global recording uploads.`;
@@ -212,22 +213,25 @@
             }
             isntToken = activeTokens.length === 0;
             isntLocalBlob = localBlob === null;
-            if (isRecording) {
-                els.recordingIndicator.classList.add('active');
-                els.recordingStatusText.textContent = `Recording in progress.`;
-            } else {
-                els.recordingIndicator.classList.remove('active');
-                els.recordingStatusText.innerHTML = `Press <I>Rec</I> to begin recording.`;
-            }
             if (isPlaying) els.btnPlay.textContent = '⏸ Pause';
+            else if (isPaused) els.btnPlay.textContent = '▶ Resume';
             else els.btnPlay.textContent = '▶ Play';
-            isBusy = isRecording || isPlaying || isUploading
+            isBusy = isRecording || isPlaying || isPaused || isUploading
             els.btnRec.disabled = isBusy;
-            els.btnStop.disabled = !(isRecording || isPlaying) || isUploading;
+            els.btnStop.disabled = !(isRecording || isPlaying || isPaused) || isUploading;
             els.btnPlay.disabled = isntLocalBlob || isRecording || isUploading;
             els.btnSave.disabled = isntLocalBlob || isBusy;
             els.btnLoad.disabled = isBusy;
             els.btnUpload.disabled = isntToken || isntLocalBlob || isBusy;
+            if (isRecording) {
+                els.recordingIndicator.classList.add('active');
+                els.recordingStatusText.innerHTML = `Recording in progress. Click <I>Stop</I> to end.`;
+            } else {
+                els.recordingIndicator.classList.remove('active');
+                if (isPlaying) els.recordingStatusText.innerHTML = 'Playing in progress.'
+                else if (isPaused) els.recordingStatusText.innerHTML = 'Click <I>Resume</I> to resume playback.'
+                else els.recordingStatusText.innerHTML = 'Click <I>Rec</I> to begin recording.';
+            }
         }
         function addToken(token, expiresAt) {
             if (activeTokens.some(t => t.token === token)) return;
@@ -361,16 +365,21 @@
             isReady = true;
             addStatusMessage(`Mix ${currentMixId} dowloaded: ${convertToMB(blob.size)}.`, 'success');
         }
-        function startChanting(url) {
-            chantAudioPlayer.src = url;
+        function startChanting() {
+            chantAudioPlayer.src = chantMixURL;
             chantAudioPlayer.load();
             chantAudioPlayer.play().catch((e) => {
                 console.error(e.name)
                 if (e.name === 'AbortError') return; // Ignore power-saving pause; resume will be handled by visibilitychange
-                addStatusMessage(`Chant udio player error: ${e}.`, 'error');
+                addStatusMessage(`Chant audio player error: ${e}.`, 'error');
              });
             addStatusMessage(`Current mix playing: ${currentMixId}`, 'info');
             isChanting = true; updateDisplay();
+        }
+        function stopChanting() {
+            chantAudioPlayer.pause();
+            chantAudioPlayer.currentTime = 0;
+            isChanting = false; updateDisplay();
         }
         function muteChant(mute) {
             chantAudioPlayer.muted = mute;
@@ -469,7 +478,7 @@
             muteChant(!chantAudioPlayer.muted);
         });
         els.btnRec.addEventListener('click', () => {
-            muteChant(true);
+            stopChanting();
             startRecording();
             startRefAudio();
             isRecording = true; updateDisplay();
@@ -484,22 +493,23 @@
                 refAudioPlayer.pause();
                 refAudioPlayer.currentTime = 0;
             }
-            if (isPlaying) {
-                isPlaying = false;
+            if (isPlaying || isPaused) {
+                isPlaying = false; isPaused = false;
                 localAudioPlayer.pause();
                 localAudioPlayer.currentTime = 0;
             }
-            muteChant(false);
             updateDisplay();
         });
         els.btnPlay.addEventListener('click', () => {
             if (localAudioPlayer.paused) {
-                localAudioPlayer.play().then(() => { muteChant(true); isPlaying = true; }).catch(e => { addStatusMessage("Playback failed: " + e.message, 'error'); });
+                localAudioPlayer.play().catch(e => { addStatusMessage("Playback failed: " + e.message, 'error'); });
+                isPlaying = true; isPaused = false;
+                stopChanting(); 
             } else {
                 localAudioPlayer.pause();
-                isPlaying = false;
+                isPlaying = false; isPaused = true;
+                updateDisplay();
             }
-            updateDisplay();
         });
         els.btnSave.addEventListener('click', () => {
             if (!localURL) return;
@@ -568,6 +578,7 @@
           if (document.visibilityState === 'visible') {
             if (chantAudioPlayer.paused && isChanting) chantAudioPlayer.play().catch(() => {});
             if (refAudioPlayer.paused && isRecording) refAudioPlayer.play().catch(() => {});
+            if (localAudioPlayer.paused && isPlaying) localAudioPlayer.play().catch(() => {});
           }
         });
         document.addEventListener('click', () => {
