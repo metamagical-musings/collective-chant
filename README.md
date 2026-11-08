@@ -3,7 +3,11 @@ A website to facilitate a collective chant or prayer.
 Under development — about ready for beta testing.
 
 ## Installation
-During development I am running the Collective Chant software on a local Linux box, inside a Python virtual environment. The software uses the Python FastAPI module to serve web pages over my local network to a browser running on my Windows system. I edited my Windows `hosts` file so that I can use the URL https://fastapi.local to open the main page. To use HTTPS, certificate files were created and placed in the project directory, but a port other than 443 could have been used for testing so that a certificate would not be needed.
+During development I am running the Collective Chant software on a local Linux box, inside a Python virtual environment.
+The software uses the Python FastAPI module to serve web pages over my local network to a browser running on my remote Windows
+system. I edited my Windows `hosts` file so that I can use the URL https://fastapi.local to open the main page. To use HTTPS,
+certificate files were created and placed in the project directory, but a port other than 443 could have been used for testing
+so that a certificate would not be needed.
 
 ### On the Linux system:
 1. Install system dependencies: `sudo apt update && sudo apt install ffmpeg && sudo apt install rubberband-cli`
@@ -19,7 +23,7 @@ During development I am running the Collective Chant software on a local Linux b
 11. In a separate terminal, start the main program (optionally using the `screen` program to allow for disconnection): `python3 main.py`
 12. If using HTTPS, run: `sudo setcap 'cap_net_bind_service=+ep' $(readlink -f .venv/bin/python3)` (to allow binding to port 443)
 13. If using HTTPS, create a certificate using mkcert, for example, and place fastapi.crt, fastapi.key, fastapi.pfx in the project directory.
-14. If using HTTPS, open a browser and navigate to https://localhost to interact with the user interface.
+14. If using HTTPS, open a browser and navigate to https://localhost to interact with the user interface on the local system.
 
 ### On a remote system:
 1. Add a line like `xxx.xxx.xxx.xxx fastapi.local` to the `hosts` file, in admin/superuser mode.
@@ -29,9 +33,9 @@ During development I am running the Collective Chant software on a local Linux b
 
 | Component | Purpose |
 |-----------|---------|
-| `index.html` | Client: uploads user submitted audios to `main.py` via websockets. |
-| `main.py` | Server: serves `index.html` to clients, saves uploaded audios, signals `mix_worker.py` to begin a mix. |
-| `mix_worker.py` | Audio processing worker: gathers uploaded audios and mixes them upon signal. |
+| `index.html` | Client: uploads user-recorded audios to `main.py` via websockets. |
+| `main.py` | Server: serves `index.html` to clients, saves uploaded audios to disk, signals `mix_worker.py` to begin a mix. |
+| `mix_worker.py` | Audio processing worker: gathers uploaded audios from disk and mixes them upon a signal. |
 
 ### `mix_worker.py`
 A standalone program that mixes `.webm` audio files found in the `uploads` directory.
@@ -51,7 +55,7 @@ at `ref_stanzas_path` (which uses blank lines to separate stanzas — the number
 by splitting the audio), then reassembled with a gap of silence (`stanza_gap_ms`) between them in preparation for the mix.
 
 When `mix_worker.py` starts, the original reference audio `ref_orig_path` (which can be any type recognized by ffmpeg,
-such as *.mp3 or *.webm) is split then reassembled with both silence gaps (`stanza_gap_ms`) between stanzas and seperately
+such as *.mp3 or *.webm) is split then reassembled with both silence gaps (`stanza_gap_ms`) between stanzas and
 with 3-tick count-ins between them. The former is stored in `ref_audio_path` and the latter is stored in `ref_ticks_path`,
 both for use by `main.py` — the former before the first mix is created and the latter to help chanters synchronize with
 the reference when recording audios for upload.
@@ -62,9 +66,6 @@ a HuggingFace account — just ignore it.) `mix_worker.py` can run as a service 
 bootup by registering `mix_worker.service` with the system. Example commands are included as comments inside the service
 file itself. Making `mix_worker.py` a service ensures that the large language model is only loaded into memory once
 per session. Also, it can be run in the background at a lower priority than `main.py`.
-
-For best ASR performance — and best mix results — correctly pronounce and clearly enunciate recorded words in a
-quiet environment while avoiding touching your computer or other recording device while reciting the reference chant.
 
 There are many tunable constants in the `Const` object of `mix_worker.py`. Some pertaining to stanzas are:
 
@@ -81,7 +82,7 @@ There are many tunable constants in the `Const` object of `mix_worker.py`. Some 
 
 ### `main.py`
 A Python server based on the FastAPI module. It serves an HTML/JS webpage to browser clients which allows users
-to listen to a recorded chant and to upload their own recordings to the server to be mixed into a chorus.
+to listen to a chant and to upload their own chant recordings to the server to be mixed into a chorus.
 
 `main.py` synchronizes with universal time. Chants are repeated every `time_slot_duration_sec` so their duration
 must be shorter than this (by at least 5 seconds) to allow for short delays in browser audio timing and to give users
@@ -148,7 +149,7 @@ The webpage is dynamic, constructed using these context variables:
 |last_mix_id | Keeps track of the mix ID, which is the number of mixes since the mix epoch.|
 |mix_epoch_sec | The number of mixes since this time, across server sessions.|
 
-The final two variables are stored in the file `mix_id_path` (`mix_id.json` by default). Delete this file to start
+The final two variables are stored in the file `mix_id_path` (`mix_id.json` by default). Delete this file to begin
 a new epoch and reset the mix ID counter.
 
 #### Websocket messages
@@ -189,15 +190,28 @@ Associated with the **Collective Chant** panel:
 
 Associated with the **Recording Controls** panel:
 
-- The ***reference player*** which plays the reference audio with lead-in ticks for synchronization when recording. There is a short silence at the beginning of this recording to allow for browser recording delays and there are audible ticks preceeding each stanza to make it easier for the user to harmonize with the reference chant.
+- The ***reference player*** which plays the reference audio with lead-in ticks for synchronization when recording.
+There is a short silence at the beginning of this recording to allow for browser recording delays and there are audible
+ticks preceeding each stanza to make it easier for the user to harmonize with the reference chant.
 
 - The ***local player*** which plays locally recorded or loaded (from disk) audio.
 
 - The ***recorder*** for recording the user reciting the reference audio.
 
-It is recommended to record in a quiet environment and not to touch any part of the computer while recording. Also, headphones are recommended so that the playing reference audio does not interfere with recording; alternatively, lower the playback volume sufficiently. `index.html` configures the ***recorder*** to use neither echo cancellation nor automatic gain control in order to maximize clarity. Consequently, the recording volume should be set sufficiently high (about 90%) but not maximum (100%) to avoid amplification of background noise.
+For best ASR performance — and best mix results — correctly pronounce and clearly enunciate recorded words in a
+quiet environment while avoiding touching your computer or other recording device while reciting the reference chant.
+Also, headphones are recommended so that the playing reference audio does not interfere with recording; alternatively,
+lower the playback volume sufficiently. `index.html` configures the ***recorder*** to use neither echo cancellation
+nor automatic gain control in order to maximize clarity. Consequently, the recording volume should be set sufficiently
+high (about 90%) but not maximum (100%) to avoid amplification of background noise.
 
-The user has the option to save a recording made within the webpage to disk. Once on disk, it could be processed with software such as `audacity` to improve its quality, then loaded back into the recorder for upload to the server. For that matter, recordings can be made by any available recording device while listening to the reference player, then loaded into the webpage. Recordings loaded from disk can be in MP3 or other formats acceptable to `ffmpeg`, which is used by `main.py`.
+The user has the option to save a recording made within the webpage to disk. Once on disk, it could be processed with
+software such as `audacity` to improve its quality, then loaded back into the recorder for upload to the server.
+For that matter, recordings can be made by any available recording device while listening to the reference player,
+then loaded into the webpage. Recordings loaded from disk can be in MP3 or other formats acceptable to `ffmpeg`,
+which is used by `main.py`.
 
-When recording is first attempted, the browser may ask for permission to use the microphone. This step can be preempted by opening your browser's site information (by clicking to the left of the URL field in my Brave browser) and activating the microphone.
+When recording is first attempted, the browser may ask for permission to use the microphone. This step can be preempted by
+opening your browser's site information (by clicking to the left of the URL field in my Brave browser) and activating
+the microphone.
 
