@@ -215,3 +215,6 @@ When recording is first attempted, the browser may ask for permission to use the
 opening your browser's site information (by clicking to the left of the URL field in my Brave browser) and activating
 the microphone.
 
+#### Screenshot
+
+!(./screen.jpg)
