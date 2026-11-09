@@ -217,4 +217,4 @@ the microphone.
 
 #### Screenshot
 
-!(./screen.jpg)
+![screenshot](./screen.jpg)
