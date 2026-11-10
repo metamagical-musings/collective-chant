@@ -152,28 +152,27 @@ chanting-status-text {
   transform: translateY(-2px);
 }
 .btn-save {
-  background: #4298b8;
-  color: white;
-}
-.btn-save:hover:not(:disabled) {
-  background: #3589a8;
-  transform: translateY(-2px);
-}
-.btn-load {
-  background: var(--secondary-color);
-  color: white;
-}
-.btn-load:hover:not(:disabled) {
-  background: #5a7ab8;
-  transform: translateY(-2px);
-}
-.btn-upload {
   background: #5566cc;
   color: white;
 }
-.btn-upload:hover:not(:disabled) {
+.btn-save:hover:not(:disabled) {
   background: #4455b8
-;
+  transform: translateY(-2px);
+}
+.btn-load {
+  background: #4298b8;
+  color: white;
+}
+.btn-load:hover:not(:disabled) {
+  background: #3589a8;
+  transform: translateY(-2px);
+}
+.btn-upload {
+  background: #6b8cce;
+  color: white;
+}
+.btn-upload:hover:not(:disabled) {
+  background: #5a7ab8;
   transform: translateY(-2px);
 }
 .btn-play {

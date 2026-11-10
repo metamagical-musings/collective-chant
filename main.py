@@ -26,7 +26,7 @@ class Const:
     max_uploads_per_time_slot = 1.5 # float
     token_expiration_sec = 6 * time_slot_duration_sec
     uploads_per_mix = 2
-    max_upload_size_bytes = 10 * 1024 * 1024
+    max_upload_size_bytes = 1 * 1024 * 1024
     mix_timeout_sec = 300
     max_queue_size = 100
     uploads_dir = "uploads"

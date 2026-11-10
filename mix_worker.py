@@ -315,7 +315,7 @@ class Audio:
             blob = self.audio[start_ms:end_ms]
             self.stanzas.append(Stanza(index=idx, start_ms=start_ms, end_ms=end_ms, audio=blob))
         if len(self.stanzas) != Reference.num_stanzas:
-            Util.log(f"  REJECT: Detected {len(self.stanzas)} upload stanzas, expected {Reference.num_stanzas}", error_code)
+            Util.log(f"  REJECT: Detected {len(self.stanzas)} upload stanzas, expected {Reference.num_stanzas}", self.error_code)
             return False
         return True
     def process(self, timer, process_ref):
