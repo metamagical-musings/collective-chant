@@ -42,7 +42,7 @@ class Const:
     seek_step_ms = 10              # resolution of silence detection
     # score_stanza()
     save_stanzas = False           # True to save stanza results in tmp_dir during testing
-    beam_size = 5
+    beam_size = 10
     temperature = 0.0
     word_timestamps = False
     condition_on_previous_text = False
