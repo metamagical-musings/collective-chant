@@ -73,7 +73,7 @@ There are many tunable constants in the `Const` object of `mix_worker.py`. Some 
 |----------|:---------:|---------|
 |min_gap_ms | 1000 | Minimum (near) silence gap in uploaded audio to qualify as a stanza boundary.|
 |min_speech_ms | 250 | Overlook nonsilent segments shorter than this when detecting silence gap.|
-|silence_threshold_offset | 15 | dBFS offset below overall level for silence detection.|
+|silence_threshold_db | -40 | Minimum level to be considererd not silent.|
 |stanza_gap_ms | 1500 | Gap of silence to be inserted between stanzas when reassembled.|
 |max_stanza_word_errors | 1 | Stanzas that exceed this word error limit are silenced.|
 |ratio_tolerance | 0.1 | Stanzas that must be stretched/compressed more than a factor of 1 +/- this value are silenced.|
