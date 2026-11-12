@@ -80,6 +80,8 @@ There are many tunable constants in the `Const` object of `mix_worker.py`. Some 
 |max_stanzas_silenced | 1 | If more than this number of stanzas are silenced, the entire audio is rejected.|
 |num_ref_audio_in_mix | 1 | Number of copies of the reference audio to add to mixes for stability. Should be >= 1 |
 
+Suggested values are for testing.
+
 ### `main.py`
 A Python server based on the FastAPI module. It serves an HTML/JS webpage to browser clients which allows users
 to listen to a chant and to upload their own chant recordings to the server to be mixed into a chorus.
