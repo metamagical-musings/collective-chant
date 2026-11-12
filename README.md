@@ -75,9 +75,9 @@ There are many tunable constants in the `Const` object of `mix_worker.py`. Some 
 |min_speech_ms | 250 | Overlook nonsilent segments shorter than this when detecting silence gap.|
 |silence_threshold_offset | 15 | dBFS offset below overall level for silence detection.|
 |stanza_gap_ms | 1500 | Gap of silence to be inserted between stanzas when reassembled.|
-|max_stanza_word_errors | 1 | If any single stanza exceeds this word error limit, the entire audio is rejected.|
+|max_stanza_word_errors | 1 | Stanzas that exceed this word error limit are silenced.|
 |ratio_tolerance | 0.1 | Stanzas that must be stretched/compressed more than a factor of 1 +/- this value are silenced.|
-|max_stanza_duration_errors | 1 | If more than this number of stanzas are silenced, the entire audio is rejected.|
+|max_stanzas_silenced | 1 | If more than this number of stanzas are silenced, the entire audio is rejected.|
 |num_ref_audio_in_mix | 1 | Number of copies of the reference audio to add to mixes for stability. Should be >= 1 |
 
 ### `main.py`
@@ -104,7 +104,7 @@ Tokens must be used within `token_expiration_sec` before they expire.
 Uploaded recordings are screened before sending them to `mix_worker.py` as follows:
 
 - Must be WebM audio.
-- Must not exceed `max_upload_size_bytes` bytes.
+- Must not exceed `max_upload_size_bytes` bytes and `max_recording_duration` seconds.
 - Duplicate recordings not allowed during a mix cycle.
 
 Although `main.py` associates uploaded recordings with their corresponding IP addresses, both recordings and
@@ -124,6 +124,7 @@ Some tunable constants in the `Const` object of `main.py`:
 | Constant | Suggested | Comment |
 |----------|:---------:|---------|
 |time_slot_duration_sec | 60 | Playback of the mix is repeated at this interval.|
+|max_recording_duration | 75 | Can use 1.25 * time_slot_duration_sec to keep proportion.|
 |max_uploads_per_time_slot | 1.5 | Global upload quota of tokens per time_slot.|
 |token_expiration_sec | 360 | Can use 6 * time_slot_duration_sec to keep proportion.|
 |max_upload_size_bytes | 1 * 1024 * 1024 | Maximum audio recording size in bytes.|
@@ -143,6 +144,7 @@ The webpage is dynamic, constructed using these context variables:
 |----------|---------|
 |chant_text | One line per stanza, stanzas separated by blank lines. |
 |time_slot_duration_sec | See `main.py` section above.|
+|max_recording_duration | See `main.py` section above.|
 |token_expiration_sec | See `main.py` section above.|
 |uploads_per_mix | See `main.py` section above.|
 |max_upload_size_bytes | See `main.py` section above.|

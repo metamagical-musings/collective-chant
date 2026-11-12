@@ -23,6 +23,7 @@ class Const:
     lock_file = "main.lock"
     words_per_token = 3
     time_slot_duration_sec = 60
+    max_recording_duration = int(1.25 * time_slot_duration_sec)
     max_uploads_per_time_slot = 1.5 # float
     token_expiration_sec = 6 * time_slot_duration_sec
     uploads_per_mix = 2
@@ -460,6 +461,7 @@ def create_app():
         return {
             "current_time": now,
             "time_slot_duration_sec": Const.time_slot_duration_sec,
+            "max_recording_duration": Const.max_recording_duration,
             "current_time_slot_index": GetCurrent.time_slot_index(now),
             "current_time_slot_remaining": GetCurrent.time_slot_remaining(now),
             "token_expiration_sec": Const.token_expiration_sec,
@@ -480,6 +482,7 @@ def create_app():
             "request": request,
             "chant_text": Chant.ref_stanzas,
             "time_slot_duration_sec": Const.time_slot_duration_sec,
+            "max_recording_duration": Const.max_recording_duration,
             "token_expiration_sec": Const.token_expiration_sec,
             "uploads_per_mix": Const.uploads_per_mix,
             "max_upload_size_bytes": Const.max_upload_size_bytes,
