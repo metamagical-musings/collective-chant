@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-import json, os, re, shutil, sys, time, subprocess, math
-import numpy as np, pyrubberband as pyrb, soundfile as sf
+import json, os, re, shutil, sys, time, math, webrtcvad, soundfile
+import numpy as np, pyrubberband as pyrb
 from filelock import FileLock, Timeout
 from datetime import datetime
-from pydub import AudioSegment, silence
+from pydub import AudioSegment
+from pydub.effects import normalize
+from pydub.exceptions import CouldntDecodeError
 from pathlib import Path
 from faster_whisper import WhisperModel
-from io import BytesIO
+
+MAX_INT16 = 32768
 
 class Const:
     error_level = 3 # 0==FATAL, 1==COURSE, 2==FINE, 3==TIMING
@@ -19,11 +22,8 @@ class Const:
     ref_ticks_path = "reference/chant_ticks.webm"
     ref_stanzas_path = "reference/chant_stanzas.txt"
     stanza_tmp_dir = "tmp/chant_stanzas"
-    # prepare_audio()
-    ffmpeg_timeout = 60.0
     sample_rate = 16000
     channels = 1
-    loudnorm_filter = "loudnorm=I=-16:TP=-3:LRA=11"
     # create_count_in_audio()
     num_ticks = 3
     tick_duration = 0.04
@@ -31,18 +31,15 @@ class Const:
     tick_frequency = 1200
     tick_amplitude = 0.3
     tick_decay = 40.0
-    # normalize_to_target()
-    headroom_db = 6.0
-    target_db = -14.0
     bitrate = "24k" # bps
     # split_into_stanzas()
     min_gap_ms = 1000              # minimum silence gap to qualify as a stanza boundary
-    min_speech_ms = 250            # skip nonsilent segments shorter than this when detecting silence gap;
-                                   # also, minimum silence gap between utterances
-    silence_threshold_db = -40
-    seek_step_ms = 10              # resolution of silence detection
+    min_speech_ms = 250            # skip speech segments shorter than this
+    min_speech_rms = 0.02         # skip speech segments weaker than this
+    vad_aggressiveness = 3         # maximum 3 for precise word boundaries
+    frame_ms = 10
     # score_stanza()
-    save_stanzas = True           # True to save stanza results in tmp_dir during testing
+    save_stanzas = True            # True to save stanza results in tmp_dir during testing
     beam_size = 10
     temperature = 0.0
     word_timestamps = False
@@ -63,6 +60,7 @@ class Const:
     model_name = "base.en"         # alternatives: tiny.en, base.en, small.en, or drop .en
     # run()
     num_ref_audio_in_mix = 1
+    save_uploads = True            # True to save uploaded recordings in uploads_dir during testing
 
 class Timer:
     def __init__(self):
@@ -93,7 +91,7 @@ class Util:
     def log_stats(path, audio):
         Util.log(f"  OK {path.name}  {round(len(audio) / 1000.0, 3)}s  {round(audio.dBFS, 2)}dBFS", 1)
     @staticmethod
-    def compute_ratio(duration_ms, ref_duration_ms, error_code):
+    def compute_ratio(duration_ms, ref_duration_ms):
         if duration_ms == 0 or ref_duration_ms == 0: return False
         ratio = duration_ms / ref_duration_ms
         if abs(1 - ratio) > Const.ratio_tolerance: return False
@@ -134,6 +132,12 @@ class Util:
         part = out_path.with_suffix(out_path.suffix + ".part")
         with open(part, "w") as fh: json.dump(obj, fh)
         os.replace(part, out_path)
+
+class VAD:
+    vad = None
+    @classmethod
+    def load(cls):
+        if cls.vad is None: cls.vad = webrtcvad.Vad(Const.vad_aggressiveness)
 
 class Whisper:
     model = None
@@ -226,9 +230,9 @@ class Stanza:
         tmp_dir = Path(Const.stanza_tmp_dir)
         tmp_dir.mkdir(parents=True, exist_ok=True)
         num_silenced_stanzas = 0
-        for i, stanza in enumerate(stanzas):
+        for stanza in stanzas:
             if not stanza.score_stanza(tmp_dir, error_code):
-                stanzas[i].audio = False
+                stanzas[stanza.index].audio = False
                 num_silenced_stanzas += 1
         if not Const.save_stanzas: shutil.rmtree(tmp_dir, ignore_errors=True)
         if num_silenced_stanzas > Const.max_stanzas_silenced: return False
@@ -247,19 +251,14 @@ class Stanza:
     @staticmethod
     def align_stanzas(up_stanzas, error_code):
         def match_duration_preserve_pitch(audio, index, ref_ms):
-            seg_ms = len(audio)
-            ratio = Util.compute_ratio(seg_ms, ref_ms, error_code)
+            stanza_ms = len(audio)
+            ratio = Util.compute_ratio(stanza_ms, ref_ms)
             if ratio is False:
-                Util.log(f"  REJECT STANZA: {ratio:.2f} duration ratio of stanza {index} exceeds allowed tolerance {Const.ratio_tolerance}", error_code)
+                Util.log(f"  REJECT STANZA: duration ratio of stanza {index} exceeds allowed tolerance {Const.ratio_tolerance}", error_code)
                 return Audio.create_silence(ref_ms), True
-            samples = np.array(audio.get_array_of_samples())
-            if audio.channels == 2: samples = samples.reshape((-1, 2))
-            samples = samples.astype(np.float32) / (2 ** (8 * audio.sample_width - 1))
-            stretched = pyrb.time_stretch(samples, audio.frame_rate, ratio)
-            buf = BytesIO()
-            sf.write(buf, stretched, audio.frame_rate, format="WAV", subtype="PCM_16")
-            buf.seek(0)
-            return AudioSegment.from_file(buf, format="wav"), False
+            stretched = pyrb.time_stretch(Audio.audio_to_float_array(audio), audio.frame_rate, ratio)
+            if stretched.ndim == 2 and audio.channels == 1: stretched = stretched.flatten()
+            return Audio.float_array_to_audio(stretched), False
         combined = AudioSegment.empty()
         gap = Audio.create_silence(Const.stanza_gap_ms)
         num_silenced_stanzas = 0
@@ -285,53 +284,51 @@ class Audio:
         self.stanzas = []
     def prepare_audio(self):
         try:
-            dst_path = Path(Const.tmp_dir) / Path(self.path.name + "_asr.wav")
-            cmd = ["ffmpeg", "-y", "-i", str(self.path), "-af", Const.loudnorm_filter, "-ar", str(Const.sample_rate), "-ac", str(Const.channels), str(dst_path)]
-            try: proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=Const.ffmpeg_timeout)
-            except FileNotFoundError as exc: raise RuntimeError("ffmpeg executable not found on PATH") from exc
-            except subprocess.TimeoutExpired as exc: raise RuntimeError(f"ffmpeg timed out after {Const.ffmpeg_timeout}s") from exc
-            if proc.returncode != 0 or not dst_path.exists():
-                tail = proc.stderr.decode(errors="replace")[-400:] if proc.stderr else ""
-                raise RuntimeError(f"ffmpeg failed (rc={proc.returncode}) on {self.path}: {tail}")
-            audio = AudioSegment.from_wav(str(dst_path))
-        except RuntimeError as exc:
-            Util.log(f"  REJECT AUDIO {self.path.name}: Audio preparation failed ({exc})", self.error_code)
+            audio = AudioSegment.from_file(self.path)
+        except CouldntDecodeError as e:
+            Util.log(f"  REJECT AUDIO {self.path.name}: Audio decoding failed", self.error_code)
             return False
-        finally:
-            if dst_path.is_file(): dst_path.unlink()
+        except FileNotFoundError:
+            Util.log(f"  REJECT AUDIO {self.path.name}: Audio file not found", self.error_code)
+            return False
         self.audio = audio.set_frame_rate(Const.sample_rate).set_channels(1).set_sample_width(2)
         return True
     def split_into_stanzas(self):
-        nonsilent = silence.detect_nonsilent(
-            self.audio,
-            min_silence_len=Const.min_speech_ms,
-            silence_thresh=Const.silence_threshold_db,
-            seek_step=Const.seek_step_ms
-        )
-        print(nonsilent)
-        # Filter out short noise artifacts within silence regions.
-        real_speech = [(s, e) for s, e in nonsilent if (e - s) >= Const.min_speech_ms]
-        print(real_speech)
-        if not real_speech:
+        # detect speech frames
+        frame_size = (Const.sample_rate * Const.frame_ms) // 1000
+        frame_bytes = frame_size * 2  # 2 bytes per int16 sample
+        samples = self.audio.raw_data
+        speech_frames = []
+        for i in range(0, len(samples) - frame_bytes + 1, frame_bytes):
+            speech_frames.append(VAD.vad.is_speech(samples[i : i + frame_bytes], Const.sample_rate))
+        # group frames into speech segments
+        speech = []
+        in_speech = False
+        start = 0
+        for i, is_speech in enumerate(speech_frames):
+            frame = i * Const.frame_ms
+            if is_speech and not in_speech:
+                in_speech = True
+                start = frame
+            elif not is_speech and in_speech:
+                in_speech = False
+                speech.append((start, frame))
+        if in_speech: speech.append((start, frame + Const.frame_ms))
+        # remove very short or weak speech segments
+        speech = [(s, e) for s, e in speech if (e - s) > Const.min_speech_ms or Audio.compute_rms(self.audio[s:e]) > Const.min_speech_rms]
+        # group speech segments into stanzas
+        stanzas = []
+        for s, e in speech:
+            if stanzas and (s - stanzas[-1][1]) < Const.min_gap_ms: stanzas[-1] = (stanzas[-1][0], e)
+            else: stanzas.append((s, e))
+        if not stanzas:
             Util.log(f"  REJECT AUDIO {self.path.name}: stanzas split failed (No speech detected)", self.error_code)
             return False
-        # Group speech regions into stanzas: a new stanza starts when the gap before it exceeds Const.min_gap_ms.
-        stanzas = [[real_speech[0]]]
-        for i in range(1, len(real_speech)):
-            prev_end = real_speech[i - 1][1]
-            curr_start = real_speech[i][0]
-            gap = curr_start - prev_end
-            if gap >= Const.min_gap_ms: stanzas.append([real_speech[i]])
-            else: stanzas[-1].append(real_speech[i])
-        print(stanzas)
-        for idx, regions in enumerate(stanzas):
-            start_ms = regions[0][0]
-            end_ms = regions[-1][1]
-            blob = self.audio[start_ms:end_ms]
-            self.stanzas.append(Stanza(index=idx, start_ms=start_ms, end_ms=end_ms, audio=blob))
-        if len(self.stanzas) != Reference.num_stanzas:
-            Util.log(f"  REJECT AUDIO: Detected {len(self.stanzas)} upload stanzas, expected {Reference.num_stanzas}", self.error_code)
+        if len(stanzas) != Reference.num_stanzas:
+            Util.log(f"  REJECT AUDIO: Detected {len(stanzas)} upload stanzas, expected {Reference.num_stanzas}", self.error_code)
             return False
+        # normalize and save stanzas
+        self.stanzas = [Stanza(index=i, start_ms=s, end_ms=e, audio=normalize(self.audio[s:e])) for i, (s, e) in enumerate(stanzas)]
         return True
     def process(self, timer, process_ref):
         if not self.prepare_audio(): return False
@@ -354,15 +351,9 @@ class Audio:
         if self.audio is False: return False
         timer.tick("align_stanzas")
         return self.audio
-    @staticmethod
-    def normalize_to_target(audio):
-        if audio.max_dBFS <= -180: return audio # digital silence
-        return audio.apply_gain(min(Const.target_db - audio.dBFS, -Const.headroom_db - audio.max_dBFS))
-    @staticmethod
-    def numpy_to_audiosegment(samples):
-        """Convert mono float32 array in [-1, 1] to a pydub AudioSegment."""
-        samples_int16 = np.clip(samples * 32767, -32768, 32767).astype(np.int16)
-        return AudioSegment(data=samples_int16.tobytes(), frame_rate=Const.sample_rate, sample_width=2, channels=1)
+    @classmethod
+    def compute_rms(cls, audio):
+        return float(np.sqrt(np.mean(cls.audio_to_float_array(audio) ** 2)))
     @staticmethod
     def create_silence(duration_ms):
         return AudioSegment.silent(duration=duration_ms, frame_rate=Const.sample_rate)
@@ -381,7 +372,21 @@ class Audio:
             segments.append(silence)
         count_in = np.concatenate(segments)
         count_in = np.clip(count_in, -1.0, 1.0) # safety clip
-        cls.count_in_audio = cls.numpy_to_audiosegment(count_in)
+        cls.count_in_audio = cls.float_array_to_audio(count_in)
+    @staticmethod
+    def audio_to_float_array(audio):
+        """Convert AudioSegment to float32 numpy array in [-1, 1].
+        Returns 1D array for mono, 2D (n_frames, 2) for stereo.
+        """
+        samples = np.frombuffer(audio.raw_data, dtype=np.int16).astype(np.float32) / MAX_INT16
+        if audio.channels == 2: samples = samples.reshape(-1, 2)
+        return samples
+    @staticmethod
+    def float_array_to_audio(samples):
+        """Convert mono float32 array in [-1, 1] to a pydub AudioSegment."""
+        samples = np.asarray(samples, dtype=np.float32)
+        samples_int16 = np.clip(samples * MAX_INT16 - 1, -MAX_INT16, MAX_INT16 - 1).astype(np.int16)
+        return AudioSegment(data=samples_int16.tobytes(), frame_rate=Const.sample_rate, sample_width=2, channels=Const.channels)
 
 class Mix:
     def __init__(self, audios, contributors):
@@ -389,17 +394,15 @@ class Mix:
         self.contributors = contributors
         self.mixed_audio = None
     def equal_gain_mix(self):
-        segments = [t.set_frame_rate(Const.sample_rate).set_channels(2).set_sample_width(2) for t in self.audios]
-        attenuation_db = 20.0 * math.log10(len(segments)) # safe starting value for coherent case; 16–18 for naturally variable voices
+        segments = [t.set_frame_rate(Const.sample_rate).set_channels(Const.channels).set_sample_width(2) for t in self.audios]
+        attenuation_db = 18.0 * math.log10(len(segments)) # 20 safe starting value for coherent case; 16–18 for naturally variable voices
         attenuated = [t - attenuation_db for t in segments]
         canvas = Audio.create_silence(max(len(t) for t in attenuated))
         for t in attenuated: canvas = canvas.overlay(t)
-        self.mixed_audio = canvas
+        self.mixed_audio = normalize(canvas)
     def process(self, mix_id, mixes_dir, timer):
         self.equal_gain_mix()
         timer.tick("mix_audio")
-        self.mixed_audio = Audio.normalize_to_target(self.mixed_audio)
-        timer.tick("normalize_audio")
         mixed_audio_path = mixes_dir / f"{mix_id}.webm"
         Util.write_audio_atomic(self.mixed_audio, mixed_audio_path)
         timer.tick("publish_audio")
@@ -427,7 +430,7 @@ def run(mix_id, uploads_dir, mixes_dir, timer):
     timer.tick("all_uploads")
     Util.log(f"Mixing audios ({Const.num_ref_audio_in_mix} reference + {len(contributions) - Const.num_ref_audio_in_mix} contributed)...", 1)
     Util.log_stats(*Mix(contributions, contributors).process(mix_id, mixes_dir, timer))
-    Util.delete_uploads(uploads)
+    if not Const.save_uploads: Util.delete_uploads(uploads)
     timer.report()
 
 def main():
@@ -435,6 +438,7 @@ def main():
     timer = Timer()
     Reference.load_stanzas(*Util.check_dirs_files(Const.ref_stanzas_path))
     Audio.create_count_in_audio()
+    VAD.load()
     Whisper.load_model(Const.model_name)
     timer.tick("load_model")
     Util.log(f"Start reference audio processing...", 1)

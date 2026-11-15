@@ -7,6 +7,7 @@ geoip2
 # mix_worker.py
 pydub
 audioop-lts
+webrtcvad-wheels
 faster_whisper
 av>=11,<19 # temporarily needed until faster_whisper catches up, or get faster-whisper directly from github
 pyrubberband
