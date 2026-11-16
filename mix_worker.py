@@ -35,7 +35,7 @@ class Const:
     # split_into_stanzas()
     min_gap_ms = 1000              # minimum silence gap to qualify as a stanza boundary
     min_speech_ms = 250            # skip speech segments shorter than this
-    min_speech_rms = 0.02         # skip speech segments weaker than this
+    min_speech_rms = 0.02          # skip speech segments weaker than this
     vad_aggressiveness = 3         # maximum 3 for precise word boundaries
     frame_ms = 10
     # score_stanza()
@@ -47,7 +47,7 @@ class Const:
     compression_ratio_threshold = 2.0
     log_prob_threshold = -1.0
     no_speech_threshold = 0.6
-    vad_filter = True
+    vad_filter = False
     max_stanza_word_errors = 1     # stanzas that exceed this word error limit are silenced
     # compute_ratio()
     ratio_tolerance = 0.10         # stanzas that must be stretched/compressed more than a factor of 1 +/- this value are silenced

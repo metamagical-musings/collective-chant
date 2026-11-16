@@ -79,7 +79,7 @@ There are many tunable constants in the `Const` object of `mix_worker.py`. Some 
 |max_stanza_word_errors | 1 | Stanzas that exceed this word error limit are silenced.|
 |ratio_tolerance | 0.1 | Stanzas that must be stretched/compressed more than a factor of 1 +/- this value are silenced.|
 |max_stanzas_silenced | 1 | If more than this number of stanzas are silenced, the entire audio is rejected.|
-|num_ref_audio_in_mix | 1 | Number of copies of the reference audio to add to mixes for stability. Should be >= 1 |
+|num_ref_audio_in_mix | 1 | Number of copies of the reference audio to add to mixes for stability. Should be >= 1. |
 
 Suggested values are for testing.
 
@@ -152,7 +152,7 @@ The webpage is dynamic, constructed using these context variables:
 |uploads_per_mix | See `main.py` section above.|
 |max_upload_size_bytes | See `main.py` section above.|
 |last_mix_id | Keeps track of the mix ID, which is the number of mixes since the mix epoch.|
-|mix_epoch_sec | The number of mixes since this time, across server sessions.|
+|mix_epoch_sec | The time elapsed since the mix epoch.|
 
 The final two variables are stored in the file `mix_id_path` (`mix_id.json` by default). Delete this file to begin
 a new epoch and reset the mix ID counter.
@@ -204,7 +204,7 @@ ticks preceeding each stanza to make it easier for the user to harmonize with th
 - The ***recorder*** for recording the user reciting the reference audio.
 
 For best ASR performance — and best mix results — correctly pronounce and clearly enunciate recorded words in a
-quiet environment while avoiding touching your computer or other recording device while reciting the reference chant.
+quiet environment while avoiding touching your computer or other recording device while reciting the chant.
 Also, headphones are recommended so that the playing reference audio does not interfere with recording; alternatively,
 lower the playback volume sufficiently. `index.html` configures the ***recorder*** to use neither echo cancellation
 nor automatic gain control in order to maximize clarity. Consequently, the recording volume should be set sufficiently

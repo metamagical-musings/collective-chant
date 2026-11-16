@@ -20,8 +20,10 @@
         <div class="two-column-layout">
             <div class="uniform-section">
                 <h2 class="section-title">Chant Text</h2>
-                <div class="chant-text-container">
-                    <div class="chant-block" id="chant-text">Waiting for chant text...</div>
+                <div class="list-container" id="chant-text">
+                    <div class="item item-info">
+                        Waiting for chant text...
+                    </div>
                 </div>
             </div>
             <div class="uniform-section">
@@ -55,7 +57,7 @@
             <div class="uniform-section">
                 <h2 class="section-title">Available Upload Tokens</h2>
                 <div class="list-container" id="tokens-list">
-                    <div class="token-item token-info">
+                    <div class="item item-info">
                         Waiting for tokens...
                     </div>
                 </div>
@@ -63,7 +65,7 @@
             <div class="uniform-section">
                 <h2 class="section-title">Chant Mix Contributors</h2>
                 <div class="list-container" id="contributors-list">
-                    <div class="token-item token-info">
+                    <div class="item item-info">
                         Waiting for chant mix...
                     </div>
                 </div>
@@ -71,7 +73,7 @@
             <div class="uniform-section">
                 <h2 class="section-title">Notifications</h2>
                 <div class="list-container" id="status-messages">
-                    <div class="status-item status-info">
+                    <div class="item item-info">
                         Connecting to server...
                     </div>
                 </div>
@@ -79,43 +81,9 @@
             <div class="uniform-section">
                 <h2 class="section-title">Instructions</h2>
                 <div class="list-container" id="instructions">
-                    <p>
-                        <strong>Unmute button:</strong> Click the <i>Unmute</i> button to hear the collective chant,
-                        starting with the next chant. It cycles every <span id="time-slot-duration">&nbsp;</span>s.
-                        The chant stops until the next chant cycle when recording or playing back your own recording.
-                    </p>
-                    <p>
-                        <strong>Chant Text:</strong> A transcription of the reference chant, with blank lines between stanzas
-                        indicating a full second pause when reciting them.
-                    </p>
-                    <p>
-                        <strong>Recording button:</strong>
-                        Click the <i>Rec</i> button to begin recording.
-                        During live recording, the reference chant is played with lead-in ticks between stanzas so that you can
-                        anticipate the next stanza. Headphones are recommended so as to record in a quiet environment.
-                        Click the <i>Stop</i> button to stop recording before <span id="recording-duration">&nbsp;</span>s have elapsed.
-                    </p>
-                    <p>
-                        <strong>Play/Pause/Resume buttons:</strong> You can listen to your own recording, with the option to pause it.
-                        Until playback ends or you click <i>Stop</i>, you cannot record and the chant cannot restart.
-                    </p>
-                    <p>
-                        <strong>Save/Load buttons:</strong> Click <i>Save</i> to store your own recording on your local computer;
-                        click <i>Load</i> to retrieve it later. There is only one audio buffer. Loading or recording displaces
-                        whatever is temporarily stored in it.
-                    </p>
-                    <p>
-                        <strong>Upload button:</strong> Click the <i>Upload</i> button to upload your own recording to the server
-                        so that it can be included in the next mix.
-                    </p>
-                    <p>
-                        <strong>Available Tokens:</strong> A token is required to upload. One may be granted at the beginning of
-                        each chant cycle depending on demand; they expire in <span id="rec-slot-duration">&nbsp;</span>s if not used.
-                    </p>
-                    <p>
-                        <strong>Chant Mix Contributors:</strong> A list of tokens included in the currently playing chant mix.
-                        Contributions by you have a green left-border.
-                    </p>
+                    <div class="item item-info">
+                        Waiting for instructions...
+                    </div>
                 </div>
             </div>
         </div>
@@ -124,7 +92,7 @@
         const config = {
             chant_text: {{ chant_text | tojson }},
             time_slot_duration_sec: {{ time_slot_duration_sec }},
-            max_recording_duration: {{ max_recording_duration }},
+            max_recording_duration_sec: {{ max_recording_duration_sec }},
             token_expiration_sec: {{ token_expiration_sec }},
             uploads_per_mix: {{ uploads_per_mix }},
             max_upload_size_bytes: {{ max_upload_size_bytes }},
@@ -155,11 +123,24 @@
         let activeTokens = []; // Array of { token, expires_at }
         let currentContributors = {}; // Array of { token, country_code }
         let currentMixId = 0;
+        const instructions = `
+<p><strong>Unmute button:</strong> Click the <i>Unmute</i> button to hear the collective chant, starting with the next chant. It cycles every {time_slot_duration_sec}s. The chant stops until the next chant cycle when recording or playing back your own recording.</p>
+
+<p><strong>Chant Text:</strong> A transcription of the reference chant, with blank lines between stanzas indicating a full second pause when reciting them.</p>
+
+<p><strong>Recording button:</strong> Click the <i>Rec</i> button to begin recording. During live recording, the reference chant is played with lead-in ticks between stanzas so that you can anticipate the next stanza. Headphones are recommended so as to record in a quiet environment. Click the <i>Stop</i> button to stop recording before {max_recording_duration_sec}s have elapsed.</p>
+
+<p><strong>Play/Pause/Resume buttons:</strong> You can listen to your own recording, with the option to pause it. Until playback ends or you click <i>Stop</i>, you cannot record and the chant cannot restart.</p>
+
+<p><strong>Save/Load buttons:</strong> Click <i>Save</i> to store your own recording on your local computer; click <i>Load</i> to retrieve it later. There is only one audio buffer. Loading or recording displaces whatever is temporarily stored in it.</p>
+
+<p><strong>Upload button:</strong> Click the <i>Upload</i> button to upload your own recording to the server so that it can be included in the next mix.</p>
+
+<p><strong>Available Tokens:</strong> A token is required to upload. One may be granted at the beginning of each chant cycle depending on demand; they expire in {token_expiration_sec}s if not used.</p>
+
+<p><strong>Chant Mix Contributors:</strong> A list of tokens included in the currently playing chant mix. Contributions by you have a green left-border.</p>`;
         const els = {
             chantingStatusText: document.getElementById('chanting-status-text'),
-            timeSlotDuration: document.getElementById('time-slot-duration'),
-            recordingDuration: document.getElementById('recording-duration'),
-            recSlotDuration: document.getElementById('rec-slot-duration'),
             chantText: document.getElementById('chant-text'),
             recordingIndicator: document.getElementById('recording-indicator'),
             recordingStatusText: document.getElementById('recording-status-text'),
@@ -174,6 +155,7 @@
             tokensList: document.getElementById('tokens-list'),
             contributorsList: document.getElementById('contributors-list'),
             statusMessages: document.getElementById('status-messages'),
+            instructions: document.getElementById('instructions')
         };
         function convertToMB(size) {
             if (size > 1024 * 1024) return `${Math.floor(size / 1024 / 1024).toFixed(1)} MB`;
@@ -194,10 +176,22 @@
             });
         }
         function initDisplay() {
-            els.chantText.textContent = config.chant_text;
-            els.timeSlotDuration.textContent = config.time_slot_duration_sec;
-            els.recordingDuration.textContent = config.max_recording_duration;
-            els.recSlotDuration.textContent = config.token_expiration_sec;
+            els.chantText.textContent = '';
+            const stanzas = config.chant_text.split('\n\n');
+            for (const stanza of stanzas) {
+                const div = document.createElement('div');
+                div.className = 'item item-info';
+                div.textContent = stanza;
+                els.chantText.appendChild(div);
+            }
+            els.instructions.textContent = '';
+            const helps = instructions.replace(/\{(\w+)\}/g, (match, key) => { return key in config ? String(config[key]) : match; }).split('\n\n');
+            for (const help of helps) {
+                const div = document.createElement('div');
+                div.className = 'item item-info';
+                div.innerHTML = help;
+                els.instructions.appendChild(div);
+            }
         }
         function getIntUnixTime() {
             return Math.floor(Date.now() / 1000);
@@ -258,7 +252,7 @@
             els.tokensList.innerHTML = '';
             if (activeTokens.length === 0) {
                 const div = document.createElement('div');
-                div.className = 'token-item';
+                div.className = 'item';
                 div.innerHTML = 'Waiting for tokens...';
                 els.tokensList.appendChild(div);
                 return;
@@ -272,10 +266,10 @@
                     return;
                 }
                 const div = document.createElement('div');
-                div.className = 'token-item' + (isExpiringSoon ? ' expiring-soon' : '');
+                div.className = 'item' + (isExpiringSoon ? ' item-expiring-soon' : '');
                 div.innerHTML = `
-                    <span class="token-value">${t.token}</span>
-                    <span class="token-time">${remaining}s</span>
+                    <span class="item-value">${t.token}</span>
+                    <span class="item-time">${remaining}s</span>
                 `;
                 els.tokensList.appendChild(div);
             });
@@ -284,7 +278,7 @@
             els.contributorsList.innerHTML = '';
             if (Object.keys(currentContributors).length === 0) {
                 const div = document.createElement('div');
-                div.className = 'token-item';
+                div.className = 'item';
                 div.innerHTML = 'Waiting for chant mix...';
                 els.contributorsList.appendChild(div);
                 return;
@@ -293,17 +287,17 @@
                 const isContributor = uploads.includes(token);
                 const country_code = currentContributors[token];
                 const div = document.createElement('div');
-                div.className = 'token-item' + (isContributor ? ' contributor' : '');
+                div.className = 'item' + (isContributor ? ' item-contributor' : '');
                 div.innerHTML = `
-                    <span class="token-value">${token}</span>
-                    <img class="token-flag" src="/flag/${country_code}">
+                    <span class="item-value">${token}</span>
+                    <img class="item-flag" src="/flag/${country_code}">
                 `;
                 els.contributorsList.appendChild(div);
             }
         }
         function addStatusMessage(msg, type = 'info') {
             const div = document.createElement('div');
-            div.className = `status-item status-${type}`;
+            div.className = `item item-${type}`;
             div.innerHTML = msg;
             els.statusMessages.prepend(div);
             while (els.statusMessages.children.length > 20) els.statusMessages.removeChild(els.statusMessages.lastChild);
@@ -455,8 +449,8 @@
                 isUploading = false; updateDisplay();
             }
             const duration_sec = await getDuration(blob);
-            if (duration_sec > config.max_recording_duration) {
-                addStatusMessage(`Upload failed, audio duration exceeds: ${config.max_recording_duration}s.`, 'error')
+            if (duration_sec > config.max_recording_duration_sec) {
+                addStatusMessage(`Upload failed, audio duration exceeds: ${config.max_recording_duration_sec}s.`, 'error')
                 done();
                 return;
             }
