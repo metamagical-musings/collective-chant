@@ -129,6 +129,7 @@ Some tunable constants in the `Const` object of `main.py`:
 |time_slot_duration_sec | 60 | Playback of the mix is repeated at this interval.|
 |max_recording_duration | 75 | Can use 1.25 * time_slot_duration_sec to keep proportion.|
 |max_uploads_per_time_slot | 1.5 | Global upload quota of tokens per time_slot.|
+|stop_recording_delay_sec | 1 | Delay after reference audio playback ends before forcing stop.|
 |token_expiration_sec | 360 | Can use 6 * time_slot_duration_sec to keep proportion.|
 |max_upload_size_bytes | 1 * 1024 * 1024 | Maximum audio recording size in bytes.|
 |uploads_per_mix | 2 | Set large enough to provide anonymity in the mix chorus.|
@@ -148,6 +149,7 @@ The webpage is dynamic, constructed using these context variables:
 |chant_text | One line per stanza, stanzas separated by blank lines. |
 |time_slot_duration_sec | See `main.py` section above.|
 |max_recording_duration | See `main.py` section above.|
+|stop_recording_delay_sec | See `main.py` section above.|
 |token_expiration_sec | See `main.py` section above.|
 |uploads_per_mix | See `main.py` section above.|
 |max_upload_size_bytes | See `main.py` section above.|

@@ -315,7 +315,7 @@ class Audio:
                 speech.append((start, frame))
         if in_speech: speech.append((start, frame + Const.frame_ms))
         # remove very short or weak speech segments
-        speech = [(s, e) for s, e in speech if (e - s) > Const.min_speech_ms or Audio.compute_rms(self.audio[s:e]) > Const.min_speech_rms]
+        speech = [(s, e) for s, e in speech if (e - s) > Const.min_speech_ms and Audio.compute_rms(self.audio[s:e]) > Const.min_speech_rms]
         # group speech segments into stanzas
         stanzas = []
         for s, e in speech:

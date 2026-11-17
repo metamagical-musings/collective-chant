@@ -24,6 +24,7 @@ class Const:
     words_per_token = 3
     time_slot_duration_sec = 60
     max_recording_duration_sec = int(1.25 * time_slot_duration_sec)
+    stop_recording_delay_sec = 1
     max_uploads_per_time_slot = 1.5 # float
     token_expiration_sec = 6 * time_slot_duration_sec
     uploads_per_mix = 2
@@ -462,6 +463,7 @@ def create_app():
             "current_time": now,
             "time_slot_duration_sec": Const.time_slot_duration_sec,
             "max_recording_duration_sec": Const.max_recording_duration_sec,
+            "stop_recording_delay_sec": Const.stop_recording_delay_sec,
             "current_time_slot_index": GetCurrent.time_slot_index(now),
             "current_time_slot_remaining": GetCurrent.time_slot_remaining(now),
             "token_expiration_sec": Const.token_expiration_sec,
@@ -483,6 +485,7 @@ def create_app():
             "chant_text": Chant.ref_stanzas,
             "time_slot_duration_sec": Const.time_slot_duration_sec,
             "max_recording_duration_sec": Const.max_recording_duration_sec,
+            "stop_recording_delay_sec": Const.stop_recording_delay_sec,
             "token_expiration_sec": Const.token_expiration_sec,
             "uploads_per_mix": Const.uploads_per_mix,
             "max_upload_size_bytes": Const.max_upload_size_bytes,

@@ -93,6 +93,7 @@
             chant_text: {{ chant_text | tojson }},
             time_slot_duration_sec: {{ time_slot_duration_sec }},
             max_recording_duration_sec: {{ max_recording_duration_sec }},
+            stop_recording_delay_sec: {{ stop_recording_delay_sec }},
             token_expiration_sec: {{ token_expiration_sec }},
             uploads_per_mix: {{ uploads_per_mix }},
             max_upload_size_bytes: {{ max_upload_size_bytes }},
@@ -128,7 +129,7 @@
 
 <p><strong>Chant Text:</strong> A transcription of the reference chant, with blank lines between stanzas indicating a full second pause when reciting them.</p>
 
-<p><strong>Recording button:</strong> Click the <i>Rec</i> button to begin recording. During live recording, the reference chant is played with lead-in ticks between stanzas so that you can anticipate the next stanza. Headphones are recommended so as to record in a quiet environment. Click the <i>Stop</i> button to stop recording before {max_recording_duration_sec}s have elapsed.</p>
+<p><strong>Recording button:</strong> Click the <i>Rec</i> button to begin recording. During live recording, the reference chant is played with lead-in ticks between stanzas so that you can anticipate the next stanza. Headphones are recommended so as to record in a quiet environment. Recording automatically stops {stop_recording_delay_sec}s after playback ends.</p>
 
 <p><strong>Play/Pause/Resume buttons:</strong> You can listen to your own recording, with the option to pause it. Until playback ends or you click <i>Stop</i>, you cannot record and the chant cannot restart.</p>
 
@@ -164,6 +165,7 @@
         function initAudio() {
             refAudioPlayer = new Audio();
             refAudioPlayer.addEventListener('ended', () => {
+                setTimeout(() => { els.btnStop.click(); }, config.stop_recording_delay_sec * 1000); 
             });
             chantAudioPlayer = new Audio();
             chantAudioPlayer.addEventListener('ended', () => {
