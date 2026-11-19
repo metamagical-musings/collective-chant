@@ -239,13 +239,9 @@ class Stanza:
         return True
     @staticmethod
     def combine_stanzas(stanzas, ticks):
+        combined = AudioSegment.empty()
         silence = Audio.create_silence(Const.stanza_gap_ms)
-        if ticks:
-            combined = silence
-            gap = Audio.count_in_audio
-        else:
-            combined = AudioSegment.empty()
-            gap = silence
+        gap = Audio.count_in_audio if ticks else silence
         for seg in stanzas: combined += gap + seg.audio
         return combined
     @staticmethod
