@@ -462,6 +462,7 @@ def create_app():
         return {
             "current_time": now,
             "time_slot_duration_sec": Const.time_slot_duration_sec,
+            "min_gap_ms": MWConst.min_gap_ms,
             "max_recording_duration_sec": Const.max_recording_duration_sec,
             "stop_recording_delay_sec": Const.stop_recording_delay_sec,
             "current_time_slot_index": GetCurrent.time_slot_index(now),
@@ -484,6 +485,7 @@ def create_app():
             "request": request,
             "chant_text": Chant.ref_stanzas,
             "time_slot_duration_sec": Const.time_slot_duration_sec,
+            "min_gap_s": round(MWConst.min_gap_ms / 1000, 1),
             "max_recording_duration_sec": Const.max_recording_duration_sec,
             "stop_recording_delay_sec": Const.stop_recording_delay_sec,
             "token_expiration_sec": Const.token_expiration_sec,

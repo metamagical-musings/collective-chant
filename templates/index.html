@@ -92,6 +92,7 @@
         const config = {
             chant_text: {{ chant_text | tojson }},
             time_slot_duration_sec: {{ time_slot_duration_sec }},
+            min_gap_s: {{ min_gap_s }},
             max_recording_duration_sec: {{ max_recording_duration_sec }},
             stop_recording_delay_sec: {{ stop_recording_delay_sec }},
             token_expiration_sec: {{ token_expiration_sec }},
@@ -127,7 +128,7 @@
         const instructions = `
 <p><strong>Unmute button:</strong> Click the <i>Unmute</i> button to hear the collective chant, starting with the next chant. It cycles every {time_slot_duration_sec}s. The chant stops until the next chant cycle when recording or playing back your own recording.</p>
 
-<p><strong>Chant Text:</strong> A transcription of the reference chant, with blank lines between stanzas indicating a full second pause when reciting them.</p>
+<p><strong>Chant Text:</strong> A transcript of the reference chant, separated into stanzas. When reciting stanzas, pause for at least {min_gap_s}s between each one.</p>
 
 <p><strong>Recording button:</strong> Click the <i>Rec</i> button to begin recording. During live recording, the reference chant is played with lead-in ticks between stanzas so that you can anticipate the next stanza. Headphones are recommended so as to record in a quiet environment. Recording automatically stops {stop_recording_delay_sec}s after playback ends.</p>
 
