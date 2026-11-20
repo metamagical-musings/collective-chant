@@ -101,6 +101,7 @@ of `words_per_token` words per token. The use of such tokens provides the follow
 - No user account (and no login) needed, ensuring anonymity.
 - Ensures that `mix_worker.py` has enough time to mix uploaded recordings.
 - Limits intentional upload flooding.
+- No need for a database.
 
 Tokens must be used within `token_expiration_sec` before they expire.
 
