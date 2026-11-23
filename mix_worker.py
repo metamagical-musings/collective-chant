@@ -33,7 +33,7 @@ class Const:
     tick_decay = 40.0
     bitrate = "24k" # bps
     # split_into_stanzas()
-    min_gap_ms = 1000              # minimum silence gap to qualify as a stanza boundary
+    min_gap_ms = 1600              # minimum silence gap to qualify as a stanza boundary
     min_speech_ms = 250            # skip speech segments shorter than this
     min_speech_rms = 0.02          # skip speech segments weaker than this
     vad_aggressiveness = 3         # maximum 3 for precise word boundaries
@@ -188,7 +188,8 @@ class Stanza:
                     dele = d[i-1, j]   + 1
                     d[i, j] = min(sub, ins, dele)
         return int(d[-1, -1])
-    def score_stanza(self, tmp_dir, error_code):
+    def score_stanza(self, tmp_dir, ref):
+        alert = "WARNING" if ref else "REJECT STANZA"
         try:
             wav_path = str(tmp_dir / f"stanza_{self.index}.wav")
             self.audio.export(wav_path, format="wav")
@@ -197,7 +198,7 @@ class Stanza:
                 language="en",
                 beam_size=Const.beam_size,
                 temperature=Const.temperature,
-                initial_prompt=Reference.words[self.index],
+                #initial_prompt=Reference.words[self.index],
                 word_timestamps=Const.word_timestamps,
                 condition_on_previous_text=Const.condition_on_previous_text,
                 compression_ratio_threshold=Const.compression_ratio_threshold,
@@ -219,19 +220,19 @@ class Stanza:
             results_file = str(tmp_dir / f"stanza_{self.index}.json")
             with open(results_file, "w") as f: json.dump(stanza_results, f, indent=4)
         except Exception as exc:
-            Util.log(f"  REJECT STANZA: Scoring aborted for stanza {self.index} ({exc})", error_code)
+            Util.log(f"  {alert}: Scoring aborted for stanza {self.index} ({exc})", 1)
             return False
         if wed > Const.max_stanza_word_errors:
-            Util.log(f"  REJECT STANZA: {wed} word errors in stanza {self.index} exceeds allowed maximum {Const.max_stanza_word_errors}", error_code)
+            Util.log(f"  {alert}: {wed} word errors in stanza {self.index} exceeds allowed maximum {Const.max_stanza_word_errors}", 1)
             return False
         return True
     @staticmethod
-    def score_stanzas(stanzas, error_code):
+    def score_stanzas(stanzas, ref):
         tmp_dir = Path(Const.stanza_tmp_dir)
         tmp_dir.mkdir(parents=True, exist_ok=True)
         num_silenced_stanzas = 0
         for stanza in stanzas:
-            if not stanza.score_stanza(tmp_dir, error_code):
+            if not stanza.score_stanza(tmp_dir, ref) and not ref:
                 stanzas[stanza.index].audio = False
                 num_silenced_stanzas += 1
         if not Const.save_stanzas: shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -245,12 +246,12 @@ class Stanza:
         for seg in stanzas: combined += gap + seg.audio
         return combined
     @staticmethod
-    def align_stanzas(up_stanzas, error_code):
+    def align_stanzas(up_stanzas):
         def match_duration_preserve_pitch(audio, index, ref_ms):
             stanza_ms = len(audio)
             ratio = Util.compute_ratio(stanza_ms, ref_ms)
             if ratio is False:
-                Util.log(f"  REJECT STANZA: duration ratio of stanza {index} exceeds allowed tolerance {Const.ratio_tolerance}", error_code)
+                Util.log(f"  REJECT STANZA: duration ratio of stanza {index} exceeds allowed tolerance {Const.ratio_tolerance}", 1)
                 return Audio.create_silence(ref_ms), True
             stretched = pyrb.time_stretch(Audio.audio_to_float_array(audio), audio.frame_rate, ratio)
             if stretched.ndim == 2 and audio.channels == 1: stretched = stretched.flatten()
@@ -267,27 +268,28 @@ class Stanza:
                 if silent: num_silenced_stanzas += 1
             combined += gap + stanza
         if num_silenced_stanzas > Const.max_stanzas_silenced:
-            Util.log(f"  REJECT AUDIO: {num_silenced_stanzas} silenced stazas exceeds allowed maximum {Const.max_stanzas_silenced}", error_code)
+            Util.log(f"  REJECT AUDIO: {num_silenced_stanzas} silenced stazas exceeds allowed maximum {Const.max_stanzas_silenced}", 1)
             return False
         return combined
 
 class Audio:
     count_in_audio = None
-    def __init__(self, path, error_code):
+    def __init__(self, path, ref):
         self.path = path
-        self.error_code = error_code
+        self.ref = ref
         self.audio = None
         self.stanzas = []
     def prepare_audio(self):
+        error_code = 0 if self.ref else 1
         try:
             audio = AudioSegment.from_file(self.path)
         except CouldntDecodeError as e:
-            Util.log(f"  REJECT AUDIO {self.path.name}: Audio decoding failed", self.error_code)
+            Util.log(f"  REJECT AUDIO {self.path.name}: Audio decoding failed", error_code)
             return False
         except FileNotFoundError:
-            Util.log(f"  REJECT AUDIO {self.path.name}: Audio file not found", self.error_code)
+            Util.log(f"  REJECT AUDIO {self.path.name}: Audio file not found", error_code)
             return False
-        self.audio = audio.set_frame_rate(Const.sample_rate).set_channels(1).set_sample_width(2)
+        self.audio = normalize(audio.set_frame_rate(Const.sample_rate).set_channels(1).set_sample_width(2))
         return True
     def split_into_stanzas(self):
         # detect speech frames
@@ -317,35 +319,37 @@ class Audio:
         for s, e in speech:
             if stanzas and (s - stanzas[-1][1]) < Const.min_gap_ms: stanzas[-1] = (stanzas[-1][0], e)
             else: stanzas.append((s, e))
+        error_code = 0 if self.ref else 1
         if not stanzas:
-            Util.log(f"  REJECT AUDIO {self.path.name}: stanzas split failed (No speech detected)", self.error_code)
+            Util.log(f"  REJECT AUDIO {self.path.name}: stanzas split failed (No speech detected)", error_code)
             return False
         if len(stanzas) != Reference.num_stanzas:
-            Util.log(f"  REJECT AUDIO: Detected {len(stanzas)} upload stanzas, expected {Reference.num_stanzas}", self.error_code)
+            Util.log(f"  REJECT AUDIO: Detected {len(stanzas)} upload stanzas, expected {Reference.num_stanzas}", error_code)
             return False
         # normalize and save stanzas
         self.stanzas = [Stanza(index=i, start_ms=s, end_ms=e, audio=normalize(self.audio[s:e])) for i, (s, e) in enumerate(stanzas)]
         return True
-    def process(self, timer, process_ref):
+    def process(self, timer):
         if not self.prepare_audio(): return False
         timer.tick("prepare_audio")
         if not self.split_into_stanzas(): return False
         timer.tick("split_stanzas")
-        if not Stanza.score_stanzas(self.stanzas, self.error_code): return False
+        if not Stanza.score_stanzas(self.stanzas, self.ref): return False
         timer.tick("score_stanzas")
-        if process_ref:
+        if self.ref:
             Reference.stanza_durations_ms = [len(stanza.audio) for stanza in self.stanzas]
-            combined = Stanza.combine_stanzas(self.stanzas, False)
+            self.audio = Stanza.combine_stanzas(self.stanzas, False)
             timer.tick("combine_stanzas_silence")
-            Util.write_audio_atomic(combined, Path(Const.ref_audio_path))
+            Util.write_audio_atomic(self.audio, Path(Const.ref_audio_path))
             timer.tick("publish_ref_audio")
             combined = Stanza.combine_stanzas(self.stanzas, True)
             timer.tick("combine_stanzas_ticks")
             Util.write_audio_atomic(combined, Path(Const.ref_ticks_path))
             timer.tick("publish_count_in_audio")
-        self.audio = Stanza.align_stanzas(self.stanzas, self.error_code)
-        if self.audio is False: return False
-        timer.tick("align_stanzas")
+        else:
+            self.audio = Stanza.align_stanzas(self.stanzas)
+            if self.audio is False: return False
+            timer.tick("align_stanzas")
         return self.audio
     @classmethod
     def compute_rms(cls, audio):
@@ -415,7 +419,7 @@ def run(mix_id, uploads_dir, mixes_dir, timer):
     contributors = []
     for path in uploads:
         Util.log(f"Processing {path.name}...", 1)
-        audio = Audio(path, 1).process(timer, False)
+        audio = Audio(path, False).process(timer)
         if audio is False: continue
         contributions.append(audio)
         matches = re.compile(r"^([^.]+)\.([^.]+)\.(.+)\.webm$").match(path.name)
@@ -438,7 +442,7 @@ def main():
     Whisper.load_model(Const.model_name)
     timer.tick("load_model")
     Util.log(f"Start reference audio processing...", 1)
-    Reference.ref_audio = Audio(*Util.check_dirs_files(Const.ref_orig_path), 0).process(timer, True) # never returns False
+    Reference.ref_audio = Audio(*Util.check_dirs_files(Const.ref_orig_path), True).process(timer) # never returns False
     Util.log_stats(Path(Const.ref_orig_path), Reference.ref_audio)
     uploads_dir, mixes_dir, tmp_dir = Util.check_dirs_files(Const.uploads_dir, Const.mixes_dir, Const.tmp_dir)
     Util.log(f"Waiting for mix signal...", 1)

@@ -191,7 +191,7 @@
             const helps = instructions.replace(/\{(\w+)\}/g, (match, key) => { return key in config ? String(config[key]) : match; }).split('\n\n');
             for (const help of helps) {
                 const div = document.createElement('div');
-                div.className = 'item item-info';
+                div.className = 'item item-inst';
                 div.innerHTML = help;
                 els.instructions.appendChild(div);
             }
