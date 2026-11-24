@@ -71,7 +71,7 @@ There are many tunable constants in the `Const` object of `mix_worker.py`. Some 
 
 | Constant | Suggested | Comment |
 |----------|:---------:|---------|
-|min_gap_ms | 1600 | Minimum (near) silence gap in uploaded audio to qualify as a stanza boundary.|
+|min_gap_ms | 1500 | Minimum (near) silence gap in uploaded audio to qualify as a stanza boundary.|
 |min_speech_ms | 250 | Skip speech segments shorter than this.|
 |min_speech_rms | 0.02 | Skip speech segments weaker than this.|
 |vad_aggressiveness | 3 | Maximum 3 for precise word boundaries.|
